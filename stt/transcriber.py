@@ -17,7 +17,8 @@ class Transcriber:
         start_time = time.time()
         
         # 'language="tr"' ekleyerek modelin dili tahmin etme yükünü alıyoruz.
-        segments, info = self.model.transcribe(audio_path, beam_size=5, language="tr")
+
+        segments, info = self.model.transcribe(audio_path, beam_size=3, language="tr")
         
         text = ""
         for segment in segments:
@@ -27,17 +28,40 @@ class Transcriber:
         return {"text": text.strip(), "duration_ms": duration_ms}
 
 # Bağımsız test bloğu
+# if __name__ == "__main__":
+#     ts = Transcriber()
+    
+#     # audio/ klasöründeki ses dosyanın adını buraya yaz.
+#     test_file = "audio/Kayıt.wav" 
+    
+#     try:
+#         print(f"İşleniyor: {test_file}")
+#         result = ts.transcribe(test_file)
+#         print(f"\n--- SONUÇ ---")
+#         print(f"Metin: {result['text']}")
+#         print(f"Gecikme (Latency): {result['duration_ms']:.2f} ms")
+#     except Exception as e:
+#         print(f"Hata oluştu: {e}")
+
 if __name__ == "__main__":
     ts = Transcriber()
     
-    # audio/ klasöründeki ses dosyanın adını buraya yaz.
-    test_file = "audio/Kayıt.wav" 
-    
-    try:
-        print(f"İşleniyor: {test_file}")
-        result = ts.transcribe(test_file)
-        print(f"\n--- SONUÇ ---")
-        print(f"Metin: {result['text']}")
-        print(f"Gecikme (Latency): {result['duration_ms']:.2f} ms")
-    except Exception as e:
-        print(f"Hata oluştu: {e}")
+    test_files = [
+        "audio/Kayıt.wav",
+        "audio/Kayıt (2).wav",
+        "audio/Kayıt (3).wav",
+        "audio/Kayıt (4).wav",
+        "audio/Kayıt (5).wav"
+    ]
+
+    for file in test_files:
+        try:
+            print(f"\nİşleniyor: {file}")
+            result = ts.transcribe(file)
+            
+            print(f"--- SONUÇ ---")
+            print(f"Metin: {result['text']}")
+            print(f"Gecikme: {result['duration_ms']:.2f} ms")
+
+        except Exception as e:
+            print(f"{file} için hata: {e}")
