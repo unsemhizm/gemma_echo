@@ -151,7 +151,7 @@ if __name__ == "__main__":
         ("Allah razı olsun. Melih", []),
         ("Kurban olayım sana Yusuf'um.", []),
         ("Ellerine sağlık teyzeciğim.", []),
-        ("İyi ki doğdun! Meliha", []), # ARTIK HINT OLARAK ÇALIŞACAK
+        ("İyi ki doğdun! Melisa", []), # ARTIK HINT OLARAK ÇALIŞACAK
         ("Ahmet projeyi bitirdi.", []),
         ("O şimdi çok mutlu.", ["Ahmet projeyi bitirdi."]),
     ]
