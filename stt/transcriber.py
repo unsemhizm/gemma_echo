@@ -58,31 +58,49 @@ class Transcriber:
 
     def transcribe(self, audio_path):
         """Ses dosyasını metne çevirir ve v7 standartlarında veri döner."""
+        
+        # 1. DOSYA GÜVENLİK KONTROLLERİ
+        if not os.path.exists(audio_path):
+            print(f"[HATA] STT: Ses dosyası bulunamadı -> {audio_path}")
+            # Sistem çökmesin diye boş ve no_speech_prob=1.0 (kesin sessizlik) dönüyoruz
+            return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
+
+        if os.path.getsize(audio_path) == 0:
+            print(f"[HATA] STT: Ses dosyası boş (0 bytes) -> {audio_path}")
+            return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
+
         start_time = time.time()
 
-        segments, info = self.model.transcribe(
-            audio_path,
-            language="tr",
-            beam_size=2,
-            best_of=2,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-            initial_prompt="Merhaba, bu bir Türkçe ses kaydıdır."
-        )
+        # 2. GÜVENLİ TRANSKRİPSİYON BLOĞU
+        try:
+            segments, info = self.model.transcribe(
+                audio_path,
+                language="tr",
+                beam_size=2,
+                best_of=2,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
+                initial_prompt="Merhaba, bu bir Türkçe ses kaydıdır."
+            )
 
-        full_text = ""
-        max_no_speech_prob = 0.0
+            full_text = ""
+            max_no_speech_prob = 0.0
 
-        for segment in segments:
-            full_text += segment.text + " "
-            if segment.no_speech_prob > max_no_speech_prob:
-                max_no_speech_prob = segment.no_speech_prob
+            for segment in segments:
+                full_text += segment.text + " "
+                if segment.no_speech_prob > max_no_speech_prob:
+                    max_no_speech_prob = segment.no_speech_prob
 
-        latency_ms = (time.time() - start_time) * 1000
+            latency_ms = (time.time() - start_time) * 1000
 
-        return {
-            "text": full_text.strip(),
-            "duration_ms": int(info.duration * 1000),
-            "latency_ms": int(latency_ms),
-            "no_speech_prob": max_no_speech_prob
-        }
+            return {
+                "text": full_text.strip(),
+                "duration_ms": int(info.duration * 1000),
+                "latency_ms": int(latency_ms),
+                "no_speech_prob": max_no_speech_prob
+            }
+
+        except Exception as e:
+            # Modelin içsel çökmelerini (örn. bozuk wav formatı) yakala
+            print(f"[CRITICAL HATA] STT İşlemi Başarısız Oldu: {e}")
+            return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
