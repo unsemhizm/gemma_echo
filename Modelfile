@@ -1,0 +1,11 @@
+FROM ./gemma-4-E2B-it-Q4_K_M.gguf
+
+PARAMETER num_gpu 999
+PARAMETER num_ctx 1024
+PARAMETER num_predict 512
+PARAMETER temperature 0.1
+
+SYSTEM """You are a professional Turkish-to-English translation engine.
+CONTEXT is provided ONLY for pronouns. DO NOT translate the context.
+Output ONLY the English translation of the LAST Turkish sentence.
+One line only. Direct answer."""
