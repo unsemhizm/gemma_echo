@@ -89,9 +89,11 @@ class Synthesizer:
             latency = int((time.time() - start_time) * 1000)
             print(f"[TTS] ElevenLabs Uretim Suresi: {latency} ms | Caliniyor...")
             play(audio)
+            return latency
 
         except Exception as e:
             print(f"[KRITIK HATA] TTS Online Modu Basarisiz: {e}")
+            return 0
 
     # ═══════════════════════════════════════════════════════════
     # OFFLINE SENTEZ — XTTS-v2 CPU
@@ -111,6 +113,14 @@ class Synthesizer:
         # Lazy Loading
         if self.xtts_model is None:
             print("[SISTEM] XTTS-v2 modeli yukleniyor (bu islem biraz surebilir)...")
+            import torch
+            _original_torch_load = torch.load
+            def _safe_torch_load(*args, **kwargs):
+                if "weights_only" not in kwargs:
+                    kwargs["weights_only"] = False
+                return _original_torch_load(*args, **kwargs)
+            torch.load = _safe_torch_load
+            
             from TTS.api import TTS
             # Sadece CPU kullanarak (VRAM'i isgal etmemek icin)
             self.xtts_model = TTS(self.xtts_model_path, gpu=False)
@@ -149,6 +159,8 @@ class Synthesizer:
             data, fs = sf.read(output_file)
             sd.play(data, fs)
             sd.wait()  # Calma bitene kadar bekle
+            return latency
             
         except Exception as e:
             print(f"[KRITIK HATA] TTS Offline Modu Basarisiz: {e}")
+            return 0

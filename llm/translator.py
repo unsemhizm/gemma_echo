@@ -262,26 +262,30 @@ class Translator:
         start_time = time.time()
         try:
             response = requests.post(
-                self.ollama_url,
+                "http://localhost:11434/api/chat",
                 json={
                     "model": self.ollama_model,
-                    "prompt": user_message,
-                    "system": self.system_prompt,
+                    "messages": [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": user_message}
+                    ],
                     "stream": False,
                     "options": {
-                        "temperature": 0.1,
-                        "num_predict": 150
+                        "temperature": 0.1
                     }
                 },
-                timeout=15
+                timeout=120
             )
             response.raise_for_status()
             
             result = response.json()
             latency = int((time.time() - start_time) * 1000)
             
+            # /api/chat formatı: result["message"]["content"]
+            translation = result.get("message", {}).get("content", "").strip()
+            
             return {
-                "translation": result.get("response", "").strip(),
+                "translation": translation,
                 "latency_ms": latency,
                 "engine": f"Ollama ({self.ollama_model})"
             }
