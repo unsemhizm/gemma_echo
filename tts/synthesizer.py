@@ -1,3 +1,6 @@
+# UYARI: Bu patch torchaudio 2.11.0 için yazılmıştır.
+# torchaudio güncellenirse _apply_torchaudio_patch() kontrol edilmeli.
+
 import os
 import time
 import shutil
