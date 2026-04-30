@@ -73,13 +73,13 @@ class Orchestrator:
         print("!"*50)
         
         # Modları değiştir
+        self.transcriber.switch_to_cpu()  # VRAM'i Gemma için boşalt
         self.translator.set_mode("offline")
         self.synthesizer.set_mode("offline")
         
         # Süreci yeniden başlat (Offline)
         print(f"[ORCHESTRATOR] Offline işleniyor: {audio_path}")
         
-        # Not: STT şu an hala GPU'da çalışıyor olabilir (transcriber.switch_to_cpu() Gün 4'te eklenecek)
         stt_result = self.transcriber.transcribe(audio_path)
         text_tr = stt_result.get("text", "")
         

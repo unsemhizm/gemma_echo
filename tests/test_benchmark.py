@@ -1,7 +1,12 @@
+import sys
 import os
 import time
 import pytest
 import torch # Cihaz kontrolü için eklendi
+
+# Proje kök dizinini yola ekle
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from stt.transcriber import Transcriber
 from llm.translator import Translator
 from tts.synthesizer import Synthesizer
@@ -79,7 +84,7 @@ def test_benchmark_online(components):
 
 def test_benchmark_offline(components):
     transcriber, translator, synthesizer = components
-    audio_files = ["audio/kayıt.wav", "audio/kayıt (2).wav", "audio/kayıt (3).wav"]
+    audio_files = ["audio/Kayıt.wav", "audio/Kayıt (2).wav", "audio/Kayıt (3).wav"]
 
     print("\n" + "="*70)
     print("   OFFLINE PIPELINE LATENCY BENCHMARK (YEREL MOD - 3 ORNEK)")

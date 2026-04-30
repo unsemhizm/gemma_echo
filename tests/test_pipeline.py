@@ -38,7 +38,7 @@ def test_offline_fallback_e2e(orchestrator_instance):
     Offline/Fallback modunu test eder.
     Sistemi bilerek offline moda çekerek XTTS'in çalışmasını sağlar.
     """
-    audio_path = "audio/kayıt (3).wav"
+    audio_path = "audio/Kayıt (3).wav"
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyası bulunamadı: {audio_path}")
         

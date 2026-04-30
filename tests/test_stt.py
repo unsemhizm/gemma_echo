@@ -37,7 +37,7 @@ def test_transcriber_interface(transcriber_instance):
 
 def test_confidence_filtering_logic(transcriber_instance):
     """DoD kriterlerindeki no_speech_prob sınırlarını test eder."""
-    audio_path = "audio/kayıt (2).wav"
+    audio_path = "audio/Kayıt (2).wav"
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyası bulunamadı: {audio_path}")
 
