@@ -5,6 +5,7 @@ import os
 import time
 import shutil
 import wave
+import threading
 import numpy as np
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
@@ -127,11 +128,43 @@ class Synthesizer:
         self.xtts_model = None
         self.xtts_model_path = "tts_models/multilingual/multi-dataset/xtts_v2"
         self._torchaudio_patched = False
+        self._xtts_ready = threading.Event()  # Background yukleme sinyali
+        self._xtts_loading = False
 
         # Referans ses dosyasi (ses klonlama icin)
         # Absolute path kullaniyoruz — relative path Turkce karakterlerle sorunlu
         self._project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.speaker_wav_path = os.path.join(self._project_dir, "audio", "Kayıt (3).wav")
+
+        # Arka planda XTTS'i sistem RAM'ine yukle (VRAM'e dokunmaz)
+        self.preload_xtts_background()
+
+    # ═══════════════════════════════════════════════════════════
+    # BACKGROUND PRELOAD — XTTS PUSU MODU
+    # ═══════════════════════════════════════════════════════════
+
+    def preload_xtts_background(self):
+        """XTTS-v2'yi arka plan daemon thread'inde sistem RAM'ine yukler.
+        Online mod calismaya devam ederken XTTS sessizce hazir hale gelir.
+        Internet koptiginda 121sn yerine ~13sn'de sentez baslar."""
+        if self._xtts_loading or self.xtts_model is not None:
+            return  # Zaten yukleniyor veya yuklenmis
+
+        self._xtts_loading = True
+
+        def _load_in_background():
+            try:
+                print("[SISTEM] XTTS-v2 arka planda yukleniyor (sistem RAM, VRAM etkilenmez)...")
+                self._load_xtts_model()
+                self._xtts_ready.set()  # Hazir sinyali gonder
+                print("[SISTEM] XTTS-v2 pusuya yatti! Offline gecis aninda hazir.")
+            except Exception as e:
+                print(f"[UYARI] XTTS arka plan yuklemesi basarisiz: {e}")
+                self._xtts_loading = False
+                self._xtts_ready.set()  # Deadlock onleme — bekleyenleri serbest birak
+
+        thread = threading.Thread(target=_load_in_background, daemon=True)
+        thread.start()
 
     # ═══════════════════════════════════════════════════════════
     # MOD YONETIMI
@@ -181,17 +214,15 @@ class Synthesizer:
 
         start_time = time.time()
         try:
-            audio_stream = self.client.text_to_speech.convert(
+            audio = self.client.text_to_speech.convert(
                 text=text,
                 voice_id=self.voice_id,
                 model_id=self.model_id
             )
-            generation_latency = int((time.time() - start_time) * 1000)
-            print(f"[TTS] ElevenLabs Uretim Suresi: {generation_latency} ms | Caliniyor...")
-            play(audio_stream)
+            play(audio)
             total_latency = int((time.time() - start_time) * 1000)
-            print(f"[TTS] ElevenLabs Toplam (Uretim + Calma): {total_latency} ms")
-            return generation_latency
+            print(f"[TTS] ElevenLabs Toplam Sure: {total_latency} ms")
+            return total_latency
 
         except Exception as e:
             print(f"[KRITIK HATA] TTS Online Modu Basarisiz: {e}")
@@ -213,9 +244,13 @@ class Synthesizer:
         print(f"[TTS] Offline Sentez (XTTS-v2) baslatiliyor...")
         start_time = time.time()
 
-        # Lazy Loading — Model sadece ilk offline cagrisinda yuklenir
+        # Background yukleme tamamlanmadiysa bekle
         if self.xtts_model is None:
-            self._load_xtts_model()
+            if self._xtts_loading:
+                print("[SISTEM] XTTS arka planda yukleniyor, bekleniyor...")
+                self._xtts_ready.wait()  # Background thread bitene kadar bekle
+            else:
+                self._load_xtts_model()  # Hic baslatilmamissa simdi yukle
 
         try:
             # Gecici cikti dosyasi (ASCII isimli — libsndfile uyumlulugu icin)

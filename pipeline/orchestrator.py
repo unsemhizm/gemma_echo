@@ -6,79 +6,88 @@ from llm.translator import Translator
 from tts.synthesizer import Synthesizer
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, transcriber: Transcriber, translator: Translator, synthesizer: Synthesizer):
+        """
+        Gemma Echo Orkestra Sefi.
+        Bilesenleri disaridan alir (Dependency Injection) —
+        main.py veya test dosyalari istenen konfigurasyonu gecebilir.
+        """
         print("\n" + "="*50)
-        print("[SİSTEM] GEMMA ECHO ORKESTRA ŞEFİ BAŞLATILIYOR")
+        print("[SISTEM] GEMMA ECHO ORKESTRA SEFI BASLATILIYOR")
         print("="*50)
         
-        self.transcriber = Transcriber()
-        self.translator = Translator()
-        self.synthesizer = Synthesizer()
+        self.transcriber = transcriber
+        self.translator = translator
+        self.synthesizer = synthesizer
         
-        # Başlangıçta hepsi online modda
+        # Baslangicta hepsi online modda
         self.translator.set_mode("online")
         self.synthesizer.set_mode("online")
         
-        # Kritik VRAM Yönetimi: Ollama'yı boşalt
-        print("[SİSTEM] Online mod aktif. Whisper için VRAM temizleniyor...")
+        # Kritik VRAM Yonetimi: Ollama'yi bosalt
+        print("[SISTEM] Online mod aktif. Whisper icin VRAM temizleniyor...")
         self.translator.release_ollama_vram()
         
-        print("[SİSTEM] Orkestra Şefi hazır! Dinlemeye geçilebilir.")
+        print("[SISTEM] Orkestra Sefi hazir! Dinlemeye gecilebilir.")
         
-    def process_audio(self, audio_path: str):
+    def process(self, audio_path: str):
         """
-        Uçtan uca ses çeviri hattı:
+        Uctan uca ses ceviri hatti:
         STT -> LLM -> TTS
         """
-        print(f"\n[ORCHESTRATOR] Ses işleniyor: {audio_path}")
+        print(f"\n[ORCHESTRATOR] Ses isleniyor: {audio_path}")
+        total_start = time.time()
         
         try:
             # 1. STT (Speech-to-Text)
             stt_start = time.time()
             stt_result = self.transcriber.transcribe(audio_path)
             
-            # Gürültü kontrolü
+            # Gurultu kontrolu
             if stt_result.get("no_speech_prob", 0) > 0.6:
-                print("[ORCHESTRATOR] Gürültü algılandı, çeviri iptal edildi.")
+                print("[ORCHESTRATOR] Gurultu algilandi, ceviri iptal edildi.")
                 return
                 
             text_tr = stt_result.get("text", "")
             if not text_tr:
-                print("[ORCHESTRATOR] Boş metin döndü, çeviri iptal edildi.")
+                print("[ORCHESTRATOR] Bos metin dondu, ceviri iptal edildi.")
                 return
-                
-            print(f"[ORCHESTRATOR] STT Süresi: {int((time.time() - stt_start)*1000)}ms | Metin: '{text_tr}'")
             
-            # 2. LLM (Çeviri)
+            stt_ms = int((time.time() - stt_start) * 1000)
+            print(f"[ORCHESTRATOR] STT Suresi: {stt_ms}ms | Metin: '{text_tr}'")
+            
+            # 2. LLM (Ceviri)
             llm_result = self.translator.translate(text_tr)
             text_en = llm_result.get("translation", "")
+            llm_ms = llm_result.get("latency_ms", 0)
             
-            print(f"[ORCHESTRATOR] Çeviri: '{text_en}' | Motor: {llm_result.get('engine')}")
+            print(f"[ORCHESTRATOR] Ceviri: '{text_en}' | Motor: {llm_result.get('engine')} | {llm_ms}ms")
             
             # 3. TTS (Sentez)
-            self.synthesizer.speak(text_en)
+            tts_ms = self.synthesizer.speak(text_en) or 0
             
-            print("[ORCHESTRATOR] İşlem tamamlandı.")
+            total_ms = int((time.time() - total_start) * 1000)
+            print(f"[ORCHESTRATOR] Islem tamamlandi. E2E: {total_ms}ms (STT:{stt_ms} + LLM:{llm_ms} + TTS:{tts_ms})")
             
         except Exception as e:
             print(f"\n[ORCHESTRATOR] HATA YAKALANDI: {e}")
-            self.fallback_mode(audio_path)
+            self._fallback(audio_path)
             
-    def fallback_mode(self, audio_path: str):
+    def _fallback(self, audio_path: str):
         """
-        Çevrimiçi servisler (Groq, ElevenLabs vb.) hata verirse XTTS ve Ollama'ya geçer.
+        Cevrimici servisler hata verirse XTTS ve Ollama'ya gecer.
         """
         print("\n" + "!"*50)
-        print("[SİSTEM] BAĞLANTI HATASI! OFFLINE (HAYATTA KALMA) MODUNA GEÇİLİYOR...")
+        print("[SISTEM] BAGLANTI HATASI! OFFLINE (HAYATTA KALMA) MODUNA GECILIYOR...")
         print("!"*50)
         
-        # Modları değiştir
-        self.transcriber.switch_to_cpu()  # VRAM'i Gemma için boşalt
+        # Modlari degistir
+        self.transcriber.switch_to_cpu()  # VRAM'i Gemma icin bosalt
         self.translator.set_mode("offline")
         self.synthesizer.set_mode("offline")
         
-        # Süreci yeniden başlat (Offline)
-        print(f"[ORCHESTRATOR] Offline işleniyor: {audio_path}")
+        # Sureci yeniden baslat (Offline)
+        print(f"[ORCHESTRATOR] Offline isleniyor: {audio_path}")
         
         stt_result = self.transcriber.transcribe(audio_path)
         text_tr = stt_result.get("text", "")
@@ -86,7 +95,7 @@ class Orchestrator:
         if text_tr:
             llm_result = self.translator.translate(text_tr)
             text_en = llm_result.get("translation", "")
-            print(f"[ORCHESTRATOR] Offline Çeviri: '{text_en}'")
+            print(f"[ORCHESTRATOR] Offline Ceviri: '{text_en}'")
             
             self.synthesizer.speak(text_en)
-            print("[ORCHESTRATOR] Offline İşlem tamamlandı.")
+            print("[ORCHESTRATOR] Offline Islem tamamlandi.")
