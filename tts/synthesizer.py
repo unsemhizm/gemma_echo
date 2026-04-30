@@ -138,7 +138,7 @@ class Synthesizer:
             
             # Not: XTTS-v2 doğrudan tts_to_file ile calistiginda speaker_wav ve language parametreleri ister.
             # Gemma Echo klasöründeki audio/kayıt (3).wav kullanılabilir.
-            speaker_wav_path = "audio/kayıt (3).wav"
+            speaker_wav_path = "audio/Kayıt (3).wav"
             
             if not os.path.exists(speaker_wav_path):
                 # Eger bulunamazsa fallback olarak sahte bos bir ses verebilir veya hata atabiliriz

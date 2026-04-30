@@ -18,9 +18,9 @@ def orchestrator_instance():
 def test_online_pipeline_e2e(orchestrator_instance):
     """
     Sistemi uçtan uca online modda test eder.
-    audio/kayıt (3).wav dosyasını kullanarak baştan sona işler.
+    audio/Kayıt (3).wav dosyasını kullanarak baştan sona işler.
     """
-    audio_path = "audio/kayıt (3).wav"
+    audio_path = "audio/Kayıt (3).wav"
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyası bulunamadı: {audio_path}")
         

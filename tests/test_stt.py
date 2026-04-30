@@ -18,7 +18,7 @@ def transcriber_instance():
 
 def test_transcriber_interface(transcriber_instance):
     """transcribe() metodunun doğru arayüzde veri döndürdüğünü test eder."""
-    audio_path = "audio/kayıt (3).wav" # Kendi dosya ismine göre güncelle
+    audio_path = "audio/Kayıt (3).wav" # Kendi dosya ismine göre güncelle
     
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyası bulunamadı: {audio_path}")
