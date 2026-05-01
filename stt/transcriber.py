@@ -31,10 +31,9 @@ class Transcriber:
     # ═══════════════════════════════════════════════════════════
     # local_gpu      : Yerel Whisper small, GPU (online mod)
     # local_cpu      : Yerel Whisper base, CPU (offline mod)
-    # cloud_groq     : Groq Whisper Large-v3 API
-    # cloud_deepgram : Deepgram Nova-3 API
+    # cloud_auto     : Groq Whisper -> Deepgram -> Local (Fallback)
 
-    VALID_MODES = ("local_gpu", "local_cpu", "cloud_groq", "cloud_deepgram")
+    VALID_MODES = ("local_gpu", "local_cpu", "cloud_auto")
 
     def __init__(self):
         # Baslangic: Online Mod (GPU)
@@ -71,10 +70,9 @@ class Transcriber:
     def set_mode(self, mode: str):
         """
         STT modunu degistirir.
-        'local_gpu'      -> Yerel Whisper GPU
-        'local_cpu'      -> Yerel Whisper CPU
-        'cloud_groq'     -> Groq Whisper Large-v3 API
-        'cloud_deepgram' -> Deepgram Nova-3 API
+        'local_gpu'  -> Yerel Whisper GPU
+        'local_cpu'  -> Yerel Whisper CPU
+        'cloud_auto' -> Groq -> Deepgram -> Yerel Whisper
         """
         if mode not in self.VALID_MODES:
             raise ValueError(f"Gecersiz STT modu: {mode}. Gecerli: {self.VALID_MODES}")
@@ -172,10 +170,8 @@ class Transcriber:
             print(f"[HATA] STT: Ses dosyasi bos (0 bytes) -> {audio_path}")
             return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
 
-        if self.mode == "cloud_groq":
-            return self._transcribe_cloud_groq(audio_path)
-        elif self.mode == "cloud_deepgram":
-            return self._transcribe_cloud_deepgram(audio_path)
+        if self.mode == "cloud_auto":
+            return self._transcribe_cloud_auto(audio_path)
         return self._transcribe_local(audio_path)
 
     # ═══════════════════════════════════════════════════════════
@@ -219,94 +215,75 @@ class Transcriber:
             return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
 
     # ═══════════════════════════════════════════════════════════
-    # BULUT TRANSKRIPSIYON — Groq Whisper Large-v3
+    # BULUT TRANSKRIPSIYON — Şelale: Groq -> Deepgram -> Local
     # ═══════════════════════════════════════════════════════════
 
-    def _transcribe_cloud_groq(self, audio_path):
-        """Groq Whisper Large-v3 API ile bulut transkripsiyon.
-        Basarisiz olursa _fallback_local_whisper() ile yerel modele duser."""
+    def _transcribe_cloud_auto(self, audio_path):
+        """Groq Whisper Large-v3 API dener.
+        Basarisiz olursa Deepgram Nova-3 dener.
+        O da basarisiz olursa yerel Whisper'a duser."""
+        
+        # 1. GROQ DENEMESI
+        if self.groq_client:
+            start_time = time.time()
+            try:
+                with open(audio_path, "rb") as audio_file:
+                    result = self.groq_client.audio.transcriptions.create(
+                        model="whisper-large-v3",
+                        file=audio_file,
+                        language="tr"
+                    )
 
-        if not self.groq_client:
-            print("[UYARI] Groq API key eksik! Yerel Whisper'a dusuyorum...")
-            return self._fallback_local_whisper(audio_path)
+                latency_ms = (time.time() - start_time) * 1000
 
-        start_time = time.time()
+                text = result.text.strip() if result.text else ""
+                print(f"[STT] Groq Cloud basarili: '{text}' | {int(latency_ms)}ms")
 
-        try:
-            with open(audio_path, "rb") as audio_file:
-                result = self.groq_client.audio.transcriptions.create(
-                    model="whisper-large-v3",
-                    file=audio_file,
-                    language="tr"
-                )
-
-            latency_ms = (time.time() - start_time) * 1000
-
-            text = result.text.strip() if result.text else ""
-            print(f"[STT] Groq Cloud basarili: '{text}' | {int(latency_ms)}ms")
-
-            return {
-                "text": text,
-                "duration_ms": 0,  # Groq API duration donmuyor
-                "latency_ms": int(latency_ms),
-                # NOT: Groq API no_speech_prob donmuyor.
-                # Bu yuzden orchestrator'daki gurultu filtresi (>0.6)
-                # cloud modunda devre disi kalir. Kabul edilebilir —
-                # Groq'un kendi VAD'i bos ses icin bos string doner.
-                "no_speech_prob": 0.0
-            }
-
-        except Exception as e:
-            print(f"[UYARI] Groq STT basarisiz: {e}")
-            return self._fallback_local_whisper(audio_path)
-
-    # ═══════════════════════════════════════════════════════════
-    # BULUT TRANSKRIPSIYON — Deepgram Nova-3
-    # ═══════════════════════════════════════════════════════════
-
-    def _transcribe_cloud_deepgram(self, audio_path):
-        """Deepgram Nova-3 API ile bulut transkripsiyon.
-        Basarisiz olursa _fallback_local_whisper() ile yerel modele duser."""
-
-        if not self.deepgram_key:
-            print("[UYARI] Deepgram API key eksik! Yerel Whisper'a dusuyorum...")
-            return self._fallback_local_whisper(audio_path)
-
-        start_time = time.time()
-
-        try:
-            url = "https://api.deepgram.com/v1/listen?model=nova-3&language=tr&smart_format=true"
-            headers = {
-                "Authorization": f"Token {self.deepgram_key}",
-                "Content-Type": "audio/wav"
-            }
-            
-            with open(audio_path, "rb") as audio_file:
-                response = requests.post(url, headers=headers, data=audio_file, timeout=10)
+                return {
+                    "text": text,
+                    "duration_ms": 0,
+                    "latency_ms": int(latency_ms),
+                    "no_speech_prob": 0.0
+                }
+            except Exception as e:
+                print(f"[UYARI] Groq STT basarisiz: {e} -> Deepgram'a geciliyor...")
+        
+        # 2. DEEPGRAM DENEMESI
+        if self.deepgram_key:
+            start_time = time.time()
+            try:
+                url = "https://api.deepgram.com/v1/listen?model=nova-3&language=tr&smart_format=true"
+                headers = {
+                    "Authorization": f"Token {self.deepgram_key}",
+                    "Content-Type": "audio/wav"
+                }
                 
-            response.raise_for_status()
-            data = response.json()
-            
-            # Deepgram JSON sonucunu ayikla
-            channels = data.get('results', {}).get('channels', [])
-            if channels and channels[0].get('alternatives'):
-                text = channels[0]['alternatives'][0].get('transcript', "").strip()
-            else:
-                text = ""
+                with open(audio_path, "rb") as audio_file:
+                    response = requests.post(url, headers=headers, data=audio_file, timeout=10)
+                    
+                response.raise_for_status()
+                data = response.json()
                 
-            latency_ms = (time.time() - start_time) * 1000
-            print(f"[STT] Deepgram Cloud basarili: '{text}' | {int(latency_ms)}ms")
+                channels = data.get('results', {}).get('channels', [])
+                if channels and channels[0].get('alternatives'):
+                    text = channels[0]['alternatives'][0].get('transcript', "").strip()
+                else:
+                    text = ""
+                    
+                latency_ms = (time.time() - start_time) * 1000
+                print(f"[STT] Deepgram Cloud basarili: '{text}' | {int(latency_ms)}ms")
 
-            return {
-                "text": text,
-                "duration_ms": 0,  # Sure verisi ayiklanabilir ama su an kritik degil
-                "latency_ms": int(latency_ms),
-                "no_speech_prob": 0.0  # VAD Deepgram tarafindan yapiliyor
-            }
+                return {
+                    "text": text,
+                    "duration_ms": 0,
+                    "latency_ms": int(latency_ms),
+                    "no_speech_prob": 0.0
+                }
+            except Exception as e:
+                print(f"[UYARI] Deepgram STT basarisiz: {e} -> Yerel Whisper'a dusuluyor...")
 
-        except Exception as e:
-            print(f"[UYARI] Deepgram STT basarisiz: {e}")
-            return self._fallback_local_whisper(audio_path)
+        # 3. YEREL WHISPER FALLBACK
+        return self._fallback_local_whisper(audio_path)
 
     # ═══════════════════════════════════════════════════════════
     # FALLBACK SELALESI — Cloud basarisiz olursa yerel Whisper

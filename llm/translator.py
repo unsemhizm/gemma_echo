@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from groq import Groq
 from openai import OpenAI
 from google import genai
+from google.genai import types
 
 # Çevresel değişkenleri yükle
 load_dotenv()
@@ -59,9 +60,9 @@ class Translator:
         Çeviri katmanını başlatır. v7 Dual-State Mimarisi.
 
         ONLINE MOD — 3 Katmanlı Turbo Fallback Zinciri:
-          Katman 1: Groq (Llama 3.1 8B)         → Hız Odaklı (< 500ms)
-          Katman 2: OpenRouter (Gemma 4 26B)     → Model Sadakati (Fallback 1)
-          Katman 3: Gemini 2.5 Flash             → Güvenlik Ağı (Fallback 2)
+          Katman 1: Gemini API (Gemma 4 26B)     → Ana Çevirmen (Kalite Odaklı)
+          Katman 2: Groq (Gemma 2 9B)            → Hız Yedeği (< 500ms)
+          Katman 3: Gemini API (Gemini 2.5 Flash)→ Güvenlik Ağı (Fallback 2)
 
         OFFLINE MOD — Yerel Ollama:
           Gemma 4 E2B Q4_K_M → localhost:11434
@@ -80,22 +81,15 @@ class Translator:
         self.groq_client = Groq(api_key=self.groq_key.strip())
         self.groq_model = "gemma2-9b-it" 
         
-        # 2. İKİNCİL MOTOR: OPENROUTER (GEMMA 4)
-        self.or_key = os.getenv("OPENROUTER_API_KEY")
-        if not self.or_key:
-            raise ValueError("OPENROUTER_API_KEY eksik!")
-        self.or_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=self.or_key.strip()
-        )
-        self.or_model = "google/gemma-4-26b-a4b-it:free"
-        
-        # 3. ÜÇÜNCÜL MOTOR: GEMINI 2.5 FLASH (GÜVENLİK YEDEĞİ)
+        # 2. İKİNCİL MOTOR: GEMINI API (GEMMA 4 26B)
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         if not self.gemini_key:
             raise ValueError("GEMINI_API_KEY eksik!")
         self.gemini_client = genai.Client(api_key=self.gemini_key.strip())
-        self.gemini_model = "gemini-2.5-flash"
+        self.gemma4_api_model = "gemma-4-26b-a4b-it"
+        
+        # 3. ÜÇÜNCÜL MOTOR: GEMINI API (GEMINI 2.5 FLASH)
+        self.gemini_fallback_model = "gemini-2.5-flash"
 
         # ─── OFFLINE MOTOR ─────────────────────────────────────
 
@@ -123,7 +117,7 @@ class Translator:
     def set_mode(self, mode: str):
         """
         Çeviri modunu değiştirir.
-        "online"  → Bulut API'leri (Groq → OpenRouter → Gemini)
+        "online"  → Bulut API'leri (Groq → Gemini API [Gemma 4] → Gemini API [Flash])
         "offline" → Yerel Ollama (Gemma 4 E2B Q4_K_M)
         """
         if mode not in ("online", "offline"):
@@ -168,19 +162,40 @@ class Translator:
 
     # ═══════════════════════════════════════════════════════════
     # ONLINE ÇEVİRİ — 3 Katmanlı Turbo Fallback Zinciri
-    # (Groq → OpenRouter → Gemini)
+    # (Gemini API [Gemma 4] → Groq → Gemini API [Flash])
     # ═══════════════════════════════════════════════════════════
 
     def translate_online(self, text_tr: str, context: list = [], hint: str = "") -> dict:
         """
         Bulut API'leri üzerinden çeviri yapar.
-        3 katmanlı fallback: Groq başarısız → OpenRouter → Gemini
+        3 katmanlı fallback: Gemini API (Gemma 4) başarısız → Groq → Gemini 2.5 Flash
         Hepsi başarısız olursa hata döner.
         """
         # Context varsa kullanıcı mesajını zenginleştir
         user_message = self._build_user_message(text_tr, context, hint)
 
-        # --- KATMAN 1: GROQ ---
+        # --- KATMAN 1: GEMINI API (GEMMA 4) ---
+        gemini_gemma_start = time.time()
+        try:
+            response = self.gemini_client.models.generate_content(
+                model=self.gemma4_api_model,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_prompt,
+                    temperature=0.2,
+                    max_output_tokens=150
+                ),
+                contents=user_message
+            )
+            latency = int((time.time() - gemini_gemma_start) * 1000)
+            return {
+                "translation": response.text.strip(),
+                "latency_ms": latency,
+                "engine": f"Gemini API ({self.gemma4_api_model})"
+            }
+        except Exception as e:
+            print(f"\n[UYARI] Gemini API (Gemma 4) Hatası: {e} -> Groq'a Geçiliyor...")
+
+        # --- KATMAN 2: GROQ ---
         start_time = time.time()
         try:
             response = self.groq_client.chat.completions.create(
@@ -199,46 +214,25 @@ class Translator:
                 "engine": f"Groq ({self.groq_model})"
             }
         except Exception as e:
-            print(f"\n[UYARI] Groq Darboğazı: {e} -> OpenRouter'a Geçiliyor...")
+            print(f"\n[UYARI] Groq Darboğazı: {e} -> Gemini 2.5 Flash'a Geçiliyor...")
 
-        # --- KATMAN 2: OPENROUTER ---
-        or_start = time.time()
+        # --- KATMAN 3: GEMINI 2.5 FLASH ---
+        gemini_flash_start = time.time()
         try:
-            response = self.or_client.chat.completions.create(
-                model=self.or_model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.2,
-                max_tokens=150
-            )
-            latency = int((time.time() - or_start) * 1000)
-            return {
-                "translation": response.choices[0].message.content.strip(),
-                "latency_ms": latency,
-                "engine": f"OpenRouter ({self.or_model})"
-            }
-        except Exception as e:
-            print(f"\n[UYARI] OpenRouter Hatası: {e} -> Gemini'ye Geçiliyor...")
-
-        # --- KATMAN 3: GEMINI ---
-        gemini_start = time.time()
-        try:
-            full_prompt = f"{self.system_prompt}\n\n"
-            if context:
-                full_prompt += f"{self.context_prompt}\n\n"
-            full_prompt += f"Text to translate: '{text_tr}'"
-            
             response = self.gemini_client.models.generate_content(
-                model=self.gemini_model,
-                contents=full_prompt
+                model=self.gemini_fallback_model,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_prompt,
+                    temperature=0.2,
+                    max_output_tokens=150
+                ),
+                contents=user_message
             )
-            latency = int((time.time() - gemini_start) * 1000)
+            latency = int((time.time() - gemini_flash_start) * 1000)
             return {
                 "translation": response.text.strip(),
                 "latency_ms": latency,
-                "engine": "Gemini 2.5 Flash"
+                "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
         except Exception as e:
             print(f"\n[KRİTİK HATA] Tüm Online Çeviri Katmanları Çöktü: {e}")

@@ -14,9 +14,9 @@ from pipeline.orchestrator import Orchestrator
 def main():
     parser = argparse.ArgumentParser(description="Gemma Echo v8 — 4 Modlu Hibrit Ceviri Sistemi")
     parser.add_argument(
-        "--mode", type=str, default="online",
-        choices=["online", "offline", "turbo", "hybrid_plus"],
-        help="Calisma modu: online (varsayilan), offline, turbo, hybrid_plus"
+        "--mode", type=str, default="interactive",
+        choices=["online", "online_xtts", "interactive", "offline", "hybrid_cloud_io", "hybrid_cloud_stt"],
+        help="Calisma modu: online, online_xtts, interactive (varsayilan), offline, hybrid_cloud_io, hybrid_cloud_stt"
     )
     parser.add_argument(
         "--input", type=str, default="audio/Kayıt (3).wav",

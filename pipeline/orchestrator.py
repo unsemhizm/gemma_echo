@@ -8,15 +8,16 @@ from tts.synthesizer import Synthesizer
 
 class Orchestrator:
     # ═══════════════════════════════════════════════════════════
-    # 4 CALISMA MODU — VRAM BUTCE HARITASI (6GB Limit)
+    # 6 CALISMA MODU — VRAM BUTCE HARITASI (6GB Limit)
     # ═══════════════════════════════════════════════════════════
-    #
-    # online       : Whisper GPU(1.5) + Groq(0) + ElevenLabs(0) = ~1.5GB
-    # offline      : Whisper CPU(0)   + Gemma(3.1) + XTTS CPU(0) = ~3.1GB
-    # turbo        : Groq STT(0)     + Groq(0)    + ElevenLabs(0) = 0GB
-    # hybrid_plus  : Groq STT(0)     + Groq(0)    + XTTS GPU(1.8) = ~1.8GB
-
-    VALID_MODES = ("online", "offline", "turbo", "hybrid_plus")
+    VALID_MODES = (
+        "online",
+        "online_xtts",
+        "interactive",
+        "offline",
+        "hybrid_cloud_io",
+        "hybrid_cloud_stt"
+    )
 
     def __init__(self, transcriber: Transcriber, translator: Translator,
                  synthesizer: Synthesizer, initial_mode: str = "online"):
@@ -60,95 +61,75 @@ class Orchestrator:
         # Hedef moda gore konfigure et
         if mode == "online":
             self._configure_online()
+        elif mode == "online_xtts":
+            self._configure_online_xtts()
+        elif mode == "interactive":
+            self._configure_interactive()
         elif mode == "offline":
             self._configure_offline()
-        elif mode == "turbo":
-            self._configure_turbo()
-        elif mode == "hybrid_plus":
-            self._configure_hybrid_plus()
+        elif mode == "hybrid_cloud_io":
+            self._configure_hybrid_cloud_io()
+        elif mode == "hybrid_cloud_stt":
+            self._configure_hybrid_cloud_stt()
 
         self.current_mode = mode
         print(f"[SISTEM] Mod gecisi tamamlandi: {mode}")
         print("-" * 40)
 
-    # ─── MODE 1: ONLINE (Yari-Bulut) ──────────────────────────
-
+    # ─── MODE 1: ONLINE (Tam Bulut) ───────────────────────────
     def _configure_online(self):
-        """STT: Whisper GPU | LLM: Groq | TTS: ElevenLabs
-        VRAM: ~1.5GB (sadece Whisper)"""
-
-        # Oncelik: XTTS GPU'daysa bosalt (VRAM guvenlik)
+        """STT: Cloud Auto | LLM: Online | TTS: Online"""
         self.synthesizer.offload_xtts_from_gpu()
-
-        # STT -> Yerel Whisper GPU
-        self.transcriber.set_mode("local_gpu")
-
-        # LLM -> Groq (online)
+        self.transcriber.set_mode("cloud_auto")
         self.translator.set_mode("online")
         self.translator.release_ollama_vram()
-
-        # TTS -> ElevenLabs
         self.synthesizer.set_mode("online")
 
-        # Arka planda XTTS'i CPU'ya yukle (fallback hazirlik)
-        self.synthesizer.preload_xtts_background(use_gpu=False)
-
-    # ─── MODE 2: OFFLINE (Survival / Tam Yerel) ──────────────
-
-    def _configure_offline(self):
-        """STT: Whisper CPU | LLM: Gemma GPU | TTS: XTTS CPU
-        VRAM: ~3.1GB (sadece Gemma)"""
-
-        # KRITIK SIRA: Once XTTS GPU'yu bosalt, sonra Gemma yukle
-        self.synthesizer.offload_xtts_from_gpu()
-
-        # STT -> CPU (VRAM'i Gemma'ya birak)
-        self.transcriber.set_mode("local_cpu")
-
-        # LLM -> Ollama/Gemma (offline — GPU'ya yuklenecek)
-        self.translator.set_mode("offline")
-
-        # TTS -> XTTS CPU
-        self.synthesizer.set_mode("offline")
-
-    # ─── MODE 3: TURBO (Tam Bulut / 0 VRAM) ─────────────────
-
-    def _configure_turbo(self):
-        """STT: Groq STT | LLM: Groq | TTS: ElevenLabs
-        VRAM: 0GB (tam bulut)"""
-
-        # XTTS GPU'daysa bosalt
-        self.synthesizer.offload_xtts_from_gpu()
-
-        # STT -> Groq Cloud (VRAM bosaltilir)
-        self.transcriber.set_mode("cloud_deepgram")
-
-        # LLM -> Groq (online)
+    # ─── MODE 2: ONLINE_XTTS (Bulut Beyin + Yerel Ses) ────────
+    def _configure_online_xtts(self):
+        """STT: Cloud Auto | LLM: Online | TTS: GPU"""
+        self.transcriber.set_mode("cloud_auto")
         self.translator.set_mode("online")
         self.translator.release_ollama_vram()
-
-        # TTS -> ElevenLabs
-        self.synthesizer.set_mode("online")
-
-    # ─── MODE 4: HYBRID PLUS (Yuksek Kalite + Yerel Klon) ────
-
-    def _configure_hybrid_plus(self):
-        """STT: Groq STT | LLM: Groq | TTS: XTTS GPU
-        VRAM: ~1.8GB (sadece XTTS)"""
-
-        # STT -> Groq Cloud (VRAM bosalt)
-        self.transcriber.set_mode("cloud_deepgram")
-
-        # LLM -> Groq (online — Ollama'yi bosalt)
-        self.translator.set_mode("online")
-        self.translator.release_ollama_vram()
-
-        # TTS -> XTTS GPU (VRAM bos, XTTS'i GPU'ya yukle)
         self.synthesizer.set_mode("gpu")
-
-        # XTTS henuz yuklenmemisse GPU'ya eager load
+        
         if self.synthesizer.xtts_model is None:
             self.synthesizer.preload_xtts_background(use_gpu=True)
+
+    # ─── MODE 3: INTERACTIVE (Yerel Kulak + Bulut Beyin + Yerel Ses)
+    def _configure_interactive(self):
+        """STT: Local GPU | LLM: Online | TTS: GPU"""
+        self.transcriber.set_mode("local_gpu")
+        self.translator.set_mode("online")
+        self.translator.release_ollama_vram()
+        self.synthesizer.set_mode("gpu")
+        
+        if self.synthesizer.xtts_model is None:
+            self.synthesizer.preload_xtts_background(use_gpu=True)
+
+    # ─── MODE 4: OFFLINE (Tam Yerel / Survival Modu) ──────────
+    def _configure_offline(self):
+        """STT: Local CPU | LLM: Offline | TTS: Offline"""
+        self.synthesizer.offload_xtts_from_gpu()
+        self.transcriber.set_mode("local_cpu")
+        self.translator.set_mode("offline")
+        self.synthesizer.set_mode("offline")
+
+    # ─── MODE 5: HYBRID_CLOUD_IO (Bulut Kulak/Ağız + Yerel Beyin)
+    def _configure_hybrid_cloud_io(self):
+        """STT: Cloud Auto | LLM: Offline | TTS: Online"""
+        self.synthesizer.offload_xtts_from_gpu()
+        self.transcriber.set_mode("cloud_auto")
+        self.translator.set_mode("offline")
+        self.synthesizer.set_mode("online")
+
+    # ─── MODE 6: HYBRID_CLOUD_STT (Bulut Kulak + Yerel Beyin/Ses)
+    def _configure_hybrid_cloud_stt(self):
+        """STT: Cloud Auto | LLM: Offline | TTS: Offline"""
+        self.synthesizer.offload_xtts_from_gpu()
+        self.transcriber.set_mode("cloud_auto")
+        self.translator.set_mode("offline")
+        self.synthesizer.set_mode("offline")
 
     # ═══════════════════════════════════════════════════════════
     # ANA ISLEM HATTI — STT -> LLM -> TTS
