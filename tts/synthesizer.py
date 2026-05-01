@@ -1,11 +1,12 @@
-# UYARI: Bu patch torchaudio 2.11.0 için yazılmıştır.
-# torchaudio güncellenirse _apply_torchaudio_patch() kontrol edilmeli.
+# UYARI: Bu patch torchaudio 2.11.0 icin yazilmistir.
+# torchaudio guncellenirse _apply_torchaudio_patch() kontrol edilmeli.
 
 import os
 import time
 import shutil
 import wave
 import threading
+import gc
 import numpy as np
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
@@ -104,12 +105,22 @@ def _apply_torchaudio_patch():
 
 
 class Synthesizer:
+    # ═══════════════════════════════════════════════════════════
+    # DESTEKLENEN MODLAR
+    # ═══════════════════════════════════════════════════════════
+    # online  : ElevenLabs bulut sentezi (online / turbo)
+    # offline : XTTS-v2 CPU (offline survival mod)
+    # gpu     : XTTS-v2 GPU (hybrid_plus — yuksek kalite klon)
+
+    VALID_MODES = ("online", "offline", "gpu")
+
     def __init__(self):
         """
-        TTS katmanini baslatir. v7 Dual-State Mimarisi.
+        TTS katmanini baslatir. v8 Quad-State Mimarisi.
 
-        ONLINE MOD  -> ElevenLabs streaming (eleven_turbo_v2_5)
-        OFFLINE MOD -> XTTS-v2 CPU (ses klonlama destekli)
+        ONLINE MOD  -> ElevenLabs (eleven_turbo_v2_5)
+        OFFLINE MOD -> XTTS-v2 CPU (ses klonlama)
+        GPU MOD     -> XTTS-v2 GPU (hizli ses klonlama, hybrid_plus)
         """
         print("[SISTEM] Ses Sentezi Modulu (Synthesizer) Baslatiliyor...")
 
@@ -124,44 +135,44 @@ class Synthesizer:
         self.model_id = "eleven_turbo_v2_5"
         self.voice_id = "pNInz6obpgDQGcFmaJgB"
 
-        # ─── OFFLINE MOTOR: XTTS-v2 ────────────────────────────
+        # ─── OFFLINE / GPU MOTOR: XTTS-v2 ──────────────────────
         self.xtts_model = None
         self.xtts_model_path = "tts_models/multilingual/multi-dataset/xtts_v2"
         self._torchaudio_patched = False
         self._xtts_ready = threading.Event()  # Background yukleme sinyali
         self._xtts_loading = False
+        self._xtts_on_gpu = False  # XTTS su an GPU'da mi?
 
         # Referans ses dosyasi (ses klonlama icin)
-        # Absolute path kullaniyoruz — relative path Turkce karakterlerle sorunlu
         self._project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.speaker_wav_path = os.path.join(self._project_dir, "audio", "Kayıt (3).wav")
-
-        # Arka planda XTTS'i sistem RAM'ine yukle (VRAM'e dokunmaz)
-        self.preload_xtts_background()
 
     # ═══════════════════════════════════════════════════════════
     # BACKGROUND PRELOAD — XTTS PUSU MODU
     # ═══════════════════════════════════════════════════════════
 
-    def preload_xtts_background(self):
-        """XTTS-v2'yi arka plan daemon thread'inde sistem RAM'ine yukler.
-        Online mod calismaya devam ederken XTTS sessizce hazir hale gelir.
-        Internet koptiginda 121sn yerine ~13sn'de sentez baslar."""
+    def preload_xtts_background(self, use_gpu=False):
+        """XTTS-v2'yi arka plan daemon thread'inde yukler.
+        use_gpu=False -> sistem RAM (online/offline icin pusu)
+        use_gpu=True  -> VRAM (hybrid_plus icin eager load)"""
         if self._xtts_loading or self.xtts_model is not None:
             return  # Zaten yukleniyor veya yuklenmis
 
         self._xtts_loading = True
+        self._xtts_ready.clear()
+
+        target_str = "GPU (VRAM)" if use_gpu else "CPU (sistem RAM)"
 
         def _load_in_background():
             try:
-                print("[SISTEM] XTTS-v2 arka planda yukleniyor (sistem RAM, VRAM etkilenmez)...")
-                self._load_xtts_model()
-                self._xtts_ready.set()  # Hazir sinyali gonder
-                print("[SISTEM] XTTS-v2 pusuya yatti! Offline gecis aninda hazir.")
+                print(f"[SISTEM] XTTS-v2 arka planda yukleniyor ({target_str})...")
+                self._load_xtts_model(use_gpu=use_gpu)
+                self._xtts_ready.set()
+                print(f"[SISTEM] XTTS-v2 pusuya yatti ({target_str})! Gecis aninda hazir.")
             except Exception as e:
                 print(f"[UYARI] XTTS arka plan yuklemesi basarisiz: {e}")
                 self._xtts_loading = False
-                self._xtts_ready.set()  # Deadlock onleme — bekleyenleri serbest birak
+                self._xtts_ready.set()  # Deadlock onleme
 
         thread = threading.Thread(target=_load_in_background, daemon=True)
         thread.start()
@@ -173,11 +184,12 @@ class Synthesizer:
     def set_mode(self, mode: str):
         """
         TTS modunu degistirir.
-        "online"  -> ElevenLabs bulut sentezi
-        "offline" -> XTTS-v2 CPU sentezi
+        'online'  -> ElevenLabs bulut sentezi
+        'offline' -> XTTS-v2 CPU sentezi
+        'gpu'     -> XTTS-v2 GPU sentezi (hybrid_plus)
         """
-        if mode not in ("online", "offline"):
-            raise ValueError(f"Gecersiz mod: {mode}. 'online' veya 'offline' olmali.")
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"Gecersiz TTS modu: {mode}. Gecerli: {self.VALID_MODES}")
 
         old_mode = self.mode
         self.mode = mode
@@ -190,25 +202,23 @@ class Synthesizer:
     def speak(self, text: str):
         """
         Metni sese donusturur ve calar.
-        Aktif moda gore online veya offline motora yonlendirir.
+        Aktif moda gore uygun motora yonlendirir.
         """
         if not text or len(text.strip()) == 0:
             return
 
         if self.mode == "online":
             return self.speak_online(text)
-        return self.speak_offline(text)
+        elif self.mode == "gpu":
+            return self.speak_offline(text, expect_gpu=True)
+        return self.speak_offline(text, expect_gpu=False)
 
     # ═══════════════════════════════════════════════════════════
-    # ONLINE SENTEZ — ElevenLabs Streaming
+    # ONLINE SENTEZ — ElevenLabs
     # ═══════════════════════════════════════════════════════════
 
     def speak_online(self, text: str):
-        """
-        ElevenLabs Turbo modeli ile bulut streaming sentezi yapar.
-        stream() kullanarak ilk chunk'i mumkun olan en erken anda alir.
-        Hedef: ilk chunk < 600ms
-        """
+        """ElevenLabs Turbo modeli ile bulut sentezi yapar."""
         if not text or len(text.strip()) == 0:
             return
 
@@ -229,34 +239,41 @@ class Synthesizer:
             return 0
 
     # ═══════════════════════════════════════════════════════════
-    # OFFLINE SENTEZ — XTTS-v2 CPU (Ses Klonlama Destekli)
+    # OFFLINE / GPU SENTEZ — XTTS-v2 (Ses Klonlama Destekli)
     # ═══════════════════════════════════════════════════════════
 
-    def speak_offline(self, text: str):
+    def speak_offline(self, text: str, expect_gpu: bool = False):
         """
-        XTTS-v2 ile yerel CPU sentezi yapar.
-        Kullanicinin kendi sesini klonlayarak Ingilizce sentez uretir.
-        Hedef: tam cumle < 4sn (warm start)
+        XTTS-v2 ile yerel sentez yapar.
+        expect_gpu=True  -> GPU'da olmasi beklenir (hybrid_plus)
+        expect_gpu=False -> CPU'da calismasi beklenir (offline)
         """
         if not text or len(text.strip()) == 0:
             return
 
-        print(f"[TTS] Offline Sentez (XTTS-v2) baslatiliyor...")
+        device_str = "GPU" if expect_gpu else "CPU"
+        print(f"[TTS] Offline Sentez (XTTS-v2 {device_str}) baslatiliyor...")
         start_time = time.time()
 
-        # Background yukleme tamamlanmadiysa bekle
+        # Model hazir degilse yukle veya bekle
         if self.xtts_model is None:
             if self._xtts_loading:
                 print("[SISTEM] XTTS arka planda yukleniyor, bekleniyor...")
-                self._xtts_ready.wait()  # Background thread bitene kadar bekle
+                self._xtts_ready.wait()
             else:
-                self._load_xtts_model()  # Hic baslatilmamissa simdi yukle
+                self._load_xtts_model(use_gpu=expect_gpu)
+
+        # Model yuklendi ama yanlis cihazda olabilir
+        if expect_gpu and not self._xtts_on_gpu:
+            print("[SISTEM] XTTS CPU'da ama GPU isteniyor, GPU'ya tasiniyor...")
+            self._reload_xtts_on_device(use_gpu=True)
+        elif not expect_gpu and self._xtts_on_gpu:
+            print("[SISTEM] XTTS GPU'da ama CPU isteniyor, CPU'ya tasiniyor...")
+            self._reload_xtts_on_device(use_gpu=False)
 
         try:
-            # Gecici cikti dosyasi (ASCII isimli — libsndfile uyumlulugu icin)
             output_file = os.path.join(self._project_dir, "offline_output.wav")
 
-            # Sentezleme — kullanicinin kendi sesiyle
             self.xtts_model.tts_to_file(
                 text=text,
                 language="en",
@@ -265,9 +282,8 @@ class Synthesizer:
             )
 
             latency = int((time.time() - start_time) * 1000)
-            print(f"[TTS] XTTS-v2 Uretim Suresi: {latency} ms | Caliniyor...")
+            print(f"[TTS] XTTS-v2 ({device_str}) Uretim Suresi: {latency} ms | Caliniyor...")
 
-            # Sesi cal
             data, fs = sf.read(output_file)
             sd.play(data, fs)
             sd.wait()
@@ -277,10 +293,14 @@ class Synthesizer:
             print(f"[KRITIK HATA] TTS Offline Modu Basarisiz: {e}")
             return 0
 
-    def _load_xtts_model(self):
-        """XTTS-v2 modelini CPU uzerinde yukler.
-        torch.load ve torchaudio.load patch'lerini uygular."""
-        print("[SISTEM] XTTS-v2 modeli yukleniyor (bu islem 20-40sn surebilir)...")
+    # ═══════════════════════════════════════════════════════════
+    # XTTS MODEL YUKLEME / BOSALTMA
+    # ═══════════════════════════════════════════════════════════
+
+    def _load_xtts_model(self, use_gpu=False):
+        """XTTS-v2 modelini yukler. use_gpu=True ise VRAM'e yukler."""
+        device_str = "GPU" if use_gpu else "CPU"
+        print(f"[SISTEM] XTTS-v2 modeli yukleniyor ({device_str}, 20-40sn surebilir)...")
         load_start = time.time()
 
         # torch.load weights_only patch
@@ -297,9 +317,39 @@ class Synthesizer:
             _apply_torchaudio_patch()
             self._torchaudio_patched = True
 
-        # Model yukleme — sadece CPU (VRAM'i isgal etmemek icin)
         from TTS.api import TTS
-        self.xtts_model = TTS(self.xtts_model_path, gpu=False)
+        self.xtts_model = TTS(self.xtts_model_path, gpu=use_gpu)
+        self._xtts_on_gpu = use_gpu
 
         load_time = time.time() - load_start
-        print(f"[SISTEM] XTTS-v2 modeli yuklendi! Sure: {load_time:.1f}sn")
+        print(f"[SISTEM] XTTS-v2 modeli yuklendi ({device_str})! Sure: {load_time:.1f}sn")
+
+    def _reload_xtts_on_device(self, use_gpu=False):
+        """XTTS modelini baska bir cihaza tasinir (GPU<->CPU)."""
+        self.offload_xtts()
+        self._load_xtts_model(use_gpu=use_gpu)
+
+    def offload_xtts(self):
+        """XTTS modelini tamamen bellekten siler (GPU veya CPU).
+        Mod gecislerinde VRAM guvenlik icin kullanilir."""
+        if self.xtts_model is not None:
+            was_gpu = self._xtts_on_gpu
+            print(f"[SISTEM] XTTS-v2 bellekten siliniyor ({'GPU' if was_gpu else 'CPU'})...")
+            del self.xtts_model
+            self.xtts_model = None
+            self._xtts_on_gpu = False
+            self._xtts_loading = False
+            self._xtts_ready.clear()
+            gc.collect()
+
+            if was_gpu:
+                import torch
+                torch.cuda.empty_cache()
+                print("[SISTEM] XTTS-v2 GPU VRAM bosaltildi.")
+            else:
+                print("[SISTEM] XTTS-v2 sistem RAM'den silindi.")
+
+    def offload_xtts_from_gpu(self):
+        """XTTS'i GPU'dan bosalt. Geriye donuk uyumluluk icin wrapper."""
+        if self._xtts_on_gpu:
+            self.offload_xtts()

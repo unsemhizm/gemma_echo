@@ -10,38 +10,41 @@ from llm.translator import Translator
 from tts.synthesizer import Synthesizer
 from pipeline.orchestrator import Orchestrator
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Gemma Echo v7 — Hibrit Ceviri Sistemi")
-    parser.add_argument("--offline", action="store_true", help="Sistemi dogrudan offline modda baslat")
-    parser.add_argument("--input", type=str, default="audio/Kayıt (3).wav", help="Islenecek ses dosyasi")
+    parser = argparse.ArgumentParser(description="Gemma Echo v8 — 4 Modlu Hibrit Ceviri Sistemi")
+    parser.add_argument(
+        "--mode", type=str, default="online",
+        choices=["online", "offline", "turbo", "hybrid_plus"],
+        help="Calisma modu: online (varsayilan), offline, turbo, hybrid_plus"
+    )
+    parser.add_argument(
+        "--input", type=str, default="audio/Kayıt (3).wav",
+        help="Islenecek ses dosyasi"
+    )
     args = parser.parse_args()
 
-    print("\n" + "="*50)
-    print("      GEMMA ECHO v7 — GUN 3: ORKESTRA SEFI")
-    print("="*50)
+    print("\n" + "="*60)
+    print("      GEMMA ECHO v8 — QUAD-STATE ORKESTRA SEFI")
+    print(f"      Mod: {args.mode.upper()}")
+    print("="*60)
 
     # 1. Bilesenleri Baslat
     transcriber = Transcriber()
     translator = Translator()
     synthesizer = Synthesizer()
 
-    # 2. Orkestray Kur
-    orchestrator = Orchestrator(transcriber, translator, synthesizer)
+    # 2. Orkestrayi Kur (baslangic moduyla)
+    orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode)
 
-    # 3. Baslangic Modunu Ayarla
-    if args.offline:
-        print("[SISTEM] Manuel olarak OFFLINE mod secildi.")
-        transcriber.switch_to_cpu()
-        translator.set_mode("offline")
-        synthesizer.set_mode("offline")
-
-    # 4. Islemi Baslat
+    # 3. Islemi Baslat
     print(f"\n[ISLEM] Hedef dosya: {args.input}")
     orchestrator.process(args.input)
 
-    print("\n" + "="*50)
-    print("      ISLEM TAMAMLANDI - GUN 4 ICIN HAZIRIZ")
-    print("="*50)
+    print("\n" + "="*60)
+    print("      ISLEM TAMAMLANDI")
+    print("="*60)
+
 
 if __name__ == "__main__":
     main()

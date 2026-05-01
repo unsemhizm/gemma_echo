@@ -78,7 +78,7 @@ class Translator:
         if not self.groq_key:
             raise ValueError("GROQ_API_KEY eksik!")
         self.groq_client = Groq(api_key=self.groq_key.strip())
-        self.groq_model = "llama-3.1-8b-instant" 
+        self.groq_model = "gemma2-9b-it" 
         
         # 2. İKİNCİL MOTOR: OPENROUTER (GEMMA 4)
         self.or_key = os.getenv("OPENROUTER_API_KEY")
@@ -274,7 +274,7 @@ class Translator:
                         "temperature": 0.1
                     }
                 },
-                timeout=120
+                timeout=300
             )
             response.raise_for_status()
             
