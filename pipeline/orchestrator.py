@@ -16,7 +16,8 @@ class Orchestrator:
         "interactive",
         "offline",
         "hybrid_cloud_io",
-        "hybrid_cloud_stt"
+        "hybrid_cloud_stt",
+        "online_local_stt"
     )
 
     def __init__(self, transcriber: Transcriber, translator: Translator,
@@ -71,6 +72,8 @@ class Orchestrator:
             self._configure_hybrid_cloud_io()
         elif mode == "hybrid_cloud_stt":
             self._configure_hybrid_cloud_stt()
+        elif mode == "online_local_stt":
+            self._configure_online_local_stt()
 
         self.current_mode = mode
         print(f"[SISTEM] Mod gecisi tamamlandi: {mode}")
@@ -130,6 +133,15 @@ class Orchestrator:
         self.transcriber.set_mode("cloud_auto")
         self.translator.set_mode("offline")
         self.synthesizer.set_mode("offline")
+
+    # ─── MODE 7: ONLINE_LOCAL_STT (Gemma Competition Ideal Modu)
+    def _configure_online_local_stt(self):
+        """STT: Local GPU | LLM: Online | TTS: Online"""
+        self.synthesizer.offload_xtts_from_gpu()
+        self.transcriber.set_mode("local_gpu")
+        self.translator.set_mode("online")
+        self.translator.release_ollama_vram()
+        self.synthesizer.set_mode("online")
 
     # ═══════════════════════════════════════════════════════════
     # ANA ISLEM HATTI — STT -> LLM -> TTS

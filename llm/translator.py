@@ -61,8 +61,8 @@ class Translator:
 
         ONLINE MOD — 3 Katmanlı Turbo Fallback Zinciri:
           Katman 1: Gemini API (Gemma 4 26B)     → Ana Çevirmen (Kalite Odaklı)
-          Katman 2: Groq (Gemma 2 9B)            → Hız Yedeği (< 500ms)
-          Katman 3: Gemini API (Gemini 2.5 Flash)→ Güvenlik Ağı (Fallback 2)
+          Katman 2: Gemini API (Gemini 2.5 Flash)→ Hız Yedeği
+          Katman 3: Groq (Llama 3.1 8B)          → Hız / Güvenlik Yedeği
 
         OFFLINE MOD — Yerel Ollama:
           Gemma 4 E2B Q4_K_M → localhost:11434
@@ -74,22 +74,22 @@ class Translator:
 
         # ─── ONLINE MOTORLAR ───────────────────────────────────
 
-        # 1. BİRİNCİL MOTOR: GROQ (HIZ ŞAMPİYONU)
-        self.groq_key = os.getenv("GROQ_API_KEY")
-        if not self.groq_key:
-            raise ValueError("GROQ_API_KEY eksik!")
-        self.groq_client = Groq(api_key=self.groq_key.strip())
-        self.groq_model = "gemma2-9b-it" 
-        
-        # 2. İKİNCİL MOTOR: GEMINI API (GEMMA 4 26B)
+        # 1. BİRİNCİL MOTOR: GEMINI API (GEMMA 4 26B)
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         if not self.gemini_key:
             raise ValueError("GEMINI_API_KEY eksik!")
         self.gemini_client = genai.Client(api_key=self.gemini_key.strip())
         self.gemma4_api_model = "gemma-4-26b-a4b-it"
         
-        # 3. ÜÇÜNCÜL MOTOR: GEMINI API (GEMINI 2.5 FLASH)
+        # 2. İKİNCİL MOTOR: GEMINI API (GEMINI 2.5 FLASH)
         self.gemini_fallback_model = "gemini-2.5-flash"
+
+        # 3. ÜÇÜNCÜL MOTOR: GROQ (HIZ YEDEĞİ)
+        self.groq_key = os.getenv("GROQ_API_KEY")
+        if not self.groq_key:
+            raise ValueError("GROQ_API_KEY eksik!")
+        self.groq_client = Groq(api_key=self.groq_key.strip())
+        self.groq_model = "llama-3.1-8b-instant"
 
         # ─── OFFLINE MOTOR ─────────────────────────────────────
 
@@ -117,7 +117,7 @@ class Translator:
     def set_mode(self, mode: str):
         """
         Çeviri modunu değiştirir.
-        "online"  → Bulut API'leri (Groq → Gemini API [Gemma 4] → Gemini API [Flash])
+        "online"  → Bulut API'leri (Gemini API [Gemma 4] → Gemini API [Flash] → Groq)
         "offline" → Yerel Ollama (Gemma 4 E2B Q4_K_M)
         """
         if mode not in ("online", "offline"):
@@ -162,13 +162,13 @@ class Translator:
 
     # ═══════════════════════════════════════════════════════════
     # ONLINE ÇEVİRİ — 3 Katmanlı Turbo Fallback Zinciri
-    # (Gemini API [Gemma 4] → Groq → Gemini API [Flash])
+    # (Gemini API [Gemma 4] → Gemini API [Flash] → Groq)
     # ═══════════════════════════════════════════════════════════
 
     def translate_online(self, text_tr: str, context: list = [], hint: str = "") -> dict:
         """
         Bulut API'leri üzerinden çeviri yapar.
-        3 katmanlı fallback: Gemini API (Gemma 4) başarısız → Groq → Gemini 2.5 Flash
+        3 katmanlı fallback: Gemini API (Gemma 4) başarısız → Gemini 2.5 Flash → Groq
         Hepsi başarısız olursa hata döner.
         """
         # Context varsa kullanıcı mesajını zenginleştir
@@ -193,30 +193,9 @@ class Translator:
                 "engine": f"Gemini API ({self.gemma4_api_model})"
             }
         except Exception as e:
-            print(f"\n[UYARI] Gemini API (Gemma 4) Hatası: {e} -> Groq'a Geçiliyor...")
+            print(f"\n[UYARI] Gemini API (Gemma 4) Hatası: {e} -> Gemini 2.5 Flash'a Geçiliyor...")
 
-        # --- KATMAN 2: GROQ ---
-        start_time = time.time()
-        try:
-            response = self.groq_client.chat.completions.create(
-                model=self.groq_model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.1, 
-                max_tokens=150
-            )
-            latency = int((time.time() - start_time) * 1000)
-            return {
-                "translation": response.choices[0].message.content.strip(),
-                "latency_ms": latency,
-                "engine": f"Groq ({self.groq_model})"
-            }
-        except Exception as e:
-            print(f"\n[UYARI] Groq Darboğazı: {e} -> Gemini 2.5 Flash'a Geçiliyor...")
-
-        # --- KATMAN 3: GEMINI 2.5 FLASH ---
+        # --- KATMAN 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
         try:
             response = self.gemini_client.models.generate_content(
@@ -233,6 +212,27 @@ class Translator:
                 "translation": response.text.strip(),
                 "latency_ms": latency,
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
+            }
+        except Exception as e:
+            print(f"\n[UYARI] Gemini 2.5 Flash Hatası: {e} -> Groq'a Geçiliyor...")
+
+        # --- KATMAN 3: GROQ ---
+        start_time = time.time()
+        try:
+            response = self.groq_client.chat.completions.create(
+                model=self.groq_model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.1, 
+                max_tokens=150
+            )
+            latency = int((time.time() - start_time) * 1000)
+            return {
+                "translation": response.choices[0].message.content.strip(),
+                "latency_ms": latency,
+                "engine": f"Groq ({self.groq_model})"
             }
         except Exception as e:
             print(f"\n[KRİTİK HATA] Tüm Online Çeviri Katmanları Çöktü: {e}")
