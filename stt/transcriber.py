@@ -64,6 +64,45 @@ class Transcriber:
         )
 
     # ═══════════════════════════════════════════════════════════
+    # GPU ISINMA — CUDA Kernel On-Yukleme
+    # ═══════════════════════════════════════════════════════════
+
+    def warm_up(self):
+        """Yerel Whisper modelini sessiz bir dummy inference ile isitir.
+        CUDA kernel derlemesini baslangiçta tetikler; boylece ilk gercek
+        cumlenin STT gecikmesi normal seviyeye iner (~800ms kazanim).
+        cloud_auto modunda API israf etmemek icin cagrilmaz."""
+        if self.mode == "cloud_auto":
+            return  # Bulut modunda gereksiz
+
+        print("[SISTEM] STT GPU isitiliyor (dummy inference)...")
+        start = time.time()
+
+        # 0.5 saniye sessiz PCM16 WAV olustur (8000 sample * 2 byte = 16 kB)
+        import wave
+        import struct
+        _tmp_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".tmp_audio"
+        )
+        os.makedirs(_tmp_dir, exist_ok=True)
+        _silent_wav = os.path.join(_tmp_dir, "warmup_silence.wav")
+
+        with wave.open(_silent_wav, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)       # int16
+            wf.setframerate(16000)
+            wf.writeframes(struct.pack("<8000h", *([0] * 8000)))  # 0.5sn sessizlik
+
+        try:
+            self._transcribe_local(_silent_wav)
+        except Exception:
+            pass  # Sessiz dosyada hata olsa bile devam et
+
+        elapsed = int((time.time() - start) * 1000)
+        print(f"[SISTEM] STT GPU isinimi tamamlandi ({elapsed}ms). Ilk cumle artik hizli!")
+
+    # ═══════════════════════════════════════════════════════════
     # MOD YONETIMI
     # ═══════════════════════════════════════════════════════════
 

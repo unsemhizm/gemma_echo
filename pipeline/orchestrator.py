@@ -76,14 +76,28 @@ class Orchestrator:
     # ═══════════════════════════════════════════════════════════
 
     def warm_up(self):
-        """API baglantilarini ve GPU'yu isitir.
-        Ilk process() cagrisinin hizli olmasi icin baslangicta cagrilir."""
+        """API baglantilarini ve GPU CUDA kernellarini isitir.
+        Ilk process() cagrisinin hizli olmasi icin baslangicta cagrilir.
+
+        Isitma sirasi:
+          1. STT GPU  — sessiz dummy inference ile CUDA kernel derleme
+          2. LLM API  — Gemini/Groq baglanti ve kimlik dogrulama
+        """
         print("[SISTEM] Modeller isitiliyor...")
+
+        # 1. STT GPU isitma (sadece lokal modlarda; cloud_auto'da atlanir)
+        try:
+            self.transcriber.warm_up()
+        except Exception as e:
+            print(f"[UYARI] STT isitma hatasi (kritik degil): {e}")
+
+        # 2. LLM API isitma (baglanti ve auth on-yukleme)
         try:
             self.translator.translate("Merhaba")
-            print("[SISTEM] Isitma tamamlandi.")
         except Exception as e:
-            print(f"[UYARI] Isitma sirasinda hata (kritik degil): {e}")
+            print(f"[UYARI] LLM isitma hatasi (kritik degil): {e}")
+
+        print("[SISTEM] Isitma tamamlandi.")
 
     # ═══════════════════════════════════════════════════════════
     # MOD YONETIMI — VRAM GUVENLIK MATRISLI
@@ -211,6 +225,15 @@ class Orchestrator:
             text_tr = stt_result.get("text", "")
             if not text_tr:
                 print("[ORCHESTRATOR] Bos metin dondu, ceviri iptal edildi.")
+                return
+
+            # Akilli Noktalama Filtresi — oksuruk / yutkunma / nefes false-positive engeli
+            # Kural: <=2 kelime VE sonda noktalama yok → iptal
+            # Istisna: sonda noktalama VARSA gonder (Evet., Tamam! vb.)
+            _words = text_tr.strip().split()
+            _has_punct = text_tr.strip()[-1] in ".!?" if text_tr.strip() else False
+            if len(_words) <= 2 and not _has_punct:
+                print(f"[ORCHESTRATOR] Kisa metin + noktalama yok ('{text_tr}') — false-positive, iptal edildi.")
                 return
 
             stt_ms = int((time.time() - stt_start) * 1000)

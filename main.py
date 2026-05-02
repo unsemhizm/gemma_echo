@@ -20,13 +20,17 @@ def main():
     )
     parser.add_argument(
         "--input", type=str, default="audio/Kayıt (3).wav",
-        help="Islenecek ses dosyasi"
+        help="Islenecek ses dosyasi (--live kullanilmiyorsa)"
+    )
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Canli mikrofon modunu baslat (VAD tabanli, Ctrl+C ile dur)"
     )
     args = parser.parse_args()
 
     print("\n" + "="*60)
     print("      GEMMA ECHO v8 — QUAD-STATE ORKESTRA SEFI")
-    print(f"      Mod: {args.mode.upper()}")
+    print(f"      Mod: {args.mode.upper()}" + (" | CANLI MIKROFON" if args.live else ""))
     print("="*60)
 
     # 1. Bilesenleri Baslat
@@ -41,12 +45,16 @@ def main():
     orchestrator.warm_up()
 
     # 4. Islemi Baslat
-    print(f"\n[ISLEM] Hedef dosya: {args.input}")
-    orchestrator.process(args.input)
-
-    print("\n" + "="*60)
-    print("      ISLEM TAMAMLANDI")
-    print("="*60)
+    if args.live:
+        from stt.recorder import Recorder
+        recorder = Recorder(orchestrator, aggressiveness=2)
+        recorder.run()
+    else:
+        print(f"\n[ISLEM] Hedef dosya: {args.input}")
+        orchestrator.process(args.input)
+        print("\n" + "="*60)
+        print("      ISLEM TAMAMLANDI")
+        print("="*60)
 
 
 if __name__ == "__main__":
