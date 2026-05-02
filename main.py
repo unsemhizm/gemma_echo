@@ -15,8 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description="Gemma Echo v8 — 4 Modlu Hibrit Ceviri Sistemi")
     parser.add_argument(
         "--mode", type=str, default="interactive",
-        choices=["online", "online_xtts", "interactive", "offline", "hybrid_cloud_io", "hybrid_cloud_stt"],
-        help="Calisma modu: online, online_xtts, interactive (varsayilan), offline, hybrid_cloud_io, hybrid_cloud_stt"
+        choices=["online", "online_xtts", "interactive", "offline", "hybrid_cloud_io", "hybrid_cloud_stt", "online_local_stt"],
+        help="Calisma modu: online, online_xtts, interactive (varsayilan), offline, hybrid_cloud_io, hybrid_cloud_stt, online_local_stt"
     )
     parser.add_argument(
         "--input", type=str, default="audio/Kayıt (3).wav",
@@ -37,7 +37,10 @@ def main():
     # 2. Orkestrayi Kur (baslangic moduyla)
     orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode)
 
-    # 3. Islemi Baslat
+    # 3. Isit (Cold-Start Warm-up)
+    orchestrator.warm_up()
+
+    # 4. Islemi Baslat
     print(f"\n[ISLEM] Hedef dosya: {args.input}")
     orchestrator.process(args.input)
 

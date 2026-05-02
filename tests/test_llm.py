@@ -112,12 +112,12 @@ def test_cultural_translation_quality(translator_instance):
     print(f"\n  Kültürel Başarı (CULTURAL_MAP ile): {passed}/10\n")
 
 
-def test_groq_latency(translator_instance):
-    """Groq API latency hedefini kontrol eder (< 500ms)."""
+def test_online_primary_latency(translator_instance):
+    """Online birincil motor latency hedefini kontrol eder (< 500ms)."""
     translator_instance.set_mode("online")
     result = translator_instance.translate("Merhaba")
-    
-    print(f"  Groq latency: {result['latency_ms']}ms (Hedef: < 500ms)")
+
+    print(f"  Online latency ({result['engine']}): {result['latency_ms']}ms (Hedef: < 500ms)")
     # Not: İlk istek yavaş olabilir, bu yüzden sert bir assert koymuyoruz
     # Ama bilgi olarak loglanıyor
 

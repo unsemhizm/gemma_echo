@@ -4,7 +4,6 @@ import requests
 import string
 from dotenv import load_dotenv
 from groq import Groq
-from openai import OpenAI
 from google import genai
 from google.genai import types
 
@@ -57,7 +56,7 @@ CULTURAL_MAP = {
 class Translator:
     def __init__(self):
         """
-        Çeviri katmanını başlatır. v7 Dual-State Mimarisi.
+        Çeviri katmanını başlatır. v8 Multi-State Mimarisi.
 
         ONLINE MOD — 3 Katmanlı Turbo Fallback Zinciri:
           Katman 1: Gemini API (Gemma 4 26B)     → Ana Çevirmen (Kalite Odaklı)
@@ -67,7 +66,7 @@ class Translator:
         OFFLINE MOD — Yerel Ollama:
           Gemma 4 E2B Q4_K_M → localhost:11434
         """
-        print("[SİSTEM] Translator v7 'Dual-State' Modülü Başlatılıyor...")
+        print("[SİSTEM] Translator v8 'Multi-State' Modülü Başlatılıyor...")
         
         # Aktif mod: "online" (varsayılan) veya "offline"
         self.mode = "online"
@@ -104,11 +103,6 @@ class Translator:
             "Reply ONLY with the English translation. Do not add quotes, explanations, or any other text."
         )
 
-        # Context Promptu: Zamir çevirisi için önceki cümleleri sağlar
-        self.context_prompt = (
-            "CONTEXT is provided ONLY for pronoun resolution. DO NOT translate the context. "
-            "Output ONLY the English translation of the LAST Turkish sentence."
-        )
 
     # ═══════════════════════════════════════════════════════════
     # MOD YÖNETİMİ

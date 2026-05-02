@@ -75,9 +75,7 @@ def test_benchmark_online(components):
     synthesizer.set_mode("online")
     translator.release_ollama_vram()
     # Transcriber'in online'da GPU'da oldugundan emin olalim (Eger offline'dan gelmissek)
-    if hasattr(transcriber, "load_model_gpu"):
-        transcriber.load_model_gpu()
-    transcriber.device = "GPU"
+    transcriber.set_mode("local_gpu")
 
     for i, audio_path in enumerate(audio_files, 1):
         run_pipeline_test(transcriber, translator, synthesizer, audio_path, i)
@@ -94,12 +92,7 @@ def test_benchmark_offline(components):
     synthesizer.set_mode("offline")
     
     # Hot-Swap tetikle
-    if hasattr(transcriber, "switch_to_cpu"):
-        transcriber.switch_to_cpu()
-        transcriber.device = "CPU"
-    else:
-        print("[BILGI] switch_to_cpu henuz eklenmemis.")
-        transcriber.device = "GPU"
+    transcriber.set_mode("local_cpu")
 
     for i, audio_path in enumerate(audio_files, 1):
         run_pipeline_test(transcriber, translator, synthesizer, audio_path, i)

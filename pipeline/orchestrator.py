@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import subprocess
 from stt.transcriber import Transcriber
 from llm.translator import Translator
 from tts.synthesizer import Synthesizer
@@ -34,11 +35,55 @@ class Orchestrator:
         self.translator = translator
         self.synthesizer = synthesizer
         self.current_mode = None  # set_mode icinde ayarlanacak
+        self.history = []  # Kayan Bellek — son 3 Turkce cumle (zamir cozumu icin)
 
         # Baslangic modunu konfigure et
         self.set_mode(initial_mode)
 
         print("[SISTEM] Orkestra Sefi hazir!")
+
+    # ═══════════════════════════════════════════════════════════
+    # VRAM MONITORU — ASCII Bar
+    # ═══════════════════════════════════════════════════════════
+
+    def _print_vram(self):
+        """nvidia-smi ile anlik VRAM kullanimi ASCII bar olarak basar."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode != 0:
+                return
+            parts = result.stdout.strip().split(",")
+            if len(parts) < 2:
+                return
+            used_mb = int(parts[0].strip())
+            total_mb = int(parts[1].strip())
+            used_gb = used_mb / 1024
+            total_gb = total_mb / 1024
+            ratio = used_mb / total_mb if total_mb > 0 else 0
+            bar_len = 10
+            filled = int(ratio * bar_len)
+            bar = "#" * filled + "." * (bar_len - filled)
+            print(f"[VRAM] [{bar}] {used_gb:.1f}GB / {total_gb:.1f}GB")
+        except Exception:
+            pass  # nvidia-smi yoksa sessizce gec
+
+    # ═══════════════════════════════════════════════════════════
+    # WARM-UP — Soguk Baslangic Isitici
+    # ═══════════════════════════════════════════════════════════
+
+    def warm_up(self):
+        """API baglantilarini ve GPU'yu isitir.
+        Ilk process() cagrisinin hizli olmasi icin baslangicta cagrilir."""
+        print("[SISTEM] Modeller isitiliyor...")
+        try:
+            self.translator.translate("Merhaba")
+            print("[SISTEM] Isitma tamamlandi.")
+        except Exception as e:
+            print(f"[UYARI] Isitma sirasinda hata (kritik degil): {e}")
 
     # ═══════════════════════════════════════════════════════════
     # MOD YONETIMI — VRAM GUVENLIK MATRISLI
@@ -77,6 +122,7 @@ class Orchestrator:
 
         self.current_mode = mode
         print(f"[SISTEM] Mod gecisi tamamlandi: {mode}")
+        self._print_vram()
         print("-" * 40)
 
     # ─── MODE 1: ONLINE (Tam Bulut) ───────────────────────────
@@ -169,13 +215,18 @@ class Orchestrator:
 
             stt_ms = int((time.time() - stt_start) * 1000)
             print(f"[ORCHESTRATOR] STT Suresi: {stt_ms}ms | Metin: '{text_tr}'")
+            self._print_vram()
 
-            # 2. LLM (Ceviri)
-            llm_result = self.translator.translate(text_tr)
+            # 2. LLM (Ceviri) — Kayan Bellek (context) ile
+            llm_result = self.translator.translate(text_tr, context=self.history)
             text_en = llm_result.get("translation", "")
             llm_ms = llm_result.get("latency_ms", 0)
 
             print(f"[ORCHESTRATOR] Ceviri: '{text_en}' | Motor: {llm_result.get('engine')} | {llm_ms}ms")
+
+            # Kayan Bellegi guncelle — son 3 Turkce cumleyi tut
+            self.history.append(text_tr)
+            self.history = self.history[-3:]
 
             # 3. TTS (Sentez)
             tts_ms = self.synthesizer.speak(text_en) or 0
