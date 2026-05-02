@@ -41,8 +41,9 @@ class Transcriber:
         self.device = "cuda"
         self.model_size = "small"
         self.compute_type = "int8"
+        print(f"[SISTEM] STT: Whisper '{self.model_size}' GPU'ya yukleniyor... (ilk acilista 5-15sn surebilir)")
         self.model = self._load_local_model()
-        print(f"[SISTEM] STT: {self.model_size} modeli GPU uzerinde baslatildi.")
+        print(f"[SISTEM] STT: Whisper '{self.model_size}' hazir!")
 
         # Groq STT client
         groq_key = os.getenv("GROQ_API_KEY")
@@ -148,6 +149,7 @@ class Transcriber:
         self.device = "cpu"
         self.model_size = "base"
         self.compute_type = "int8"
+        print("[SISTEM] STT: Whisper 'base' CPU'ya yukleniyor...")
         self.model = self._load_local_model()
 
         elapsed = time.time() - start_time
@@ -165,6 +167,7 @@ class Transcriber:
         self.device = "cuda"
         self.model_size = "small"
         self.compute_type = "int8"
+        print("[SISTEM] STT: Whisper 'small' GPU'ya yukleniyor...")
         self.model = self._load_local_model()
 
         elapsed = time.time() - start_time
@@ -228,8 +231,7 @@ class Transcriber:
                 beam_size=2,
                 best_of=2,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=500),
-                initial_prompt="Merhaba, bu bir Turkce ses kaydidir."
+                vad_parameters=dict(min_silence_duration_ms=500)
             )
 
             full_text = ""

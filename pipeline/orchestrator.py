@@ -217,8 +217,9 @@ class Orchestrator:
             stt_start = time.time()
             stt_result = self.transcriber.transcribe(audio_path)
 
-            # Gurultu kontrolu
-            if stt_result.get("no_speech_prob", 0) > 0.6:
+            # Gurultu kontrolu (esik 0.4: initial_prompt kaldirildiginda Whisper
+            # gercek konusma skorlarini daha dogru raporluyor)
+            if stt_result.get("no_speech_prob", 0) > 0.4:
                 print("[ORCHESTRATOR] Gurultu algilandi, ceviri iptal edildi.")
                 return
 
@@ -244,6 +245,10 @@ class Orchestrator:
             llm_result = self.translator.translate(text_tr, context=self.history)
             text_en = llm_result.get("translation", "")
             llm_ms = llm_result.get("latency_ms", 0)
+
+            # Tum online motorlar basarisiz oldu → _fallback() tetikle
+            if llm_result.get("engine") == "Failed":
+                raise RuntimeError("Tum online LLM katmanlari basarisiz (baglanti hatasi?).")
 
             print(f"[ORCHESTRATOR] Ceviri: '{text_en}' | Motor: {llm_result.get('engine')} | {llm_ms}ms")
 
@@ -279,13 +284,17 @@ class Orchestrator:
         # Islemi offline olarak tekrar dene
         print(f"[ORCHESTRATOR] Offline isleniyor: {audio_path}")
 
-        stt_result = self.transcriber.transcribe(audio_path)
-        text_tr = stt_result.get("text", "")
+        try:
+            stt_result = self.transcriber.transcribe(audio_path)
+            text_tr = stt_result.get("text", "")
 
-        if text_tr:
-            llm_result = self.translator.translate(text_tr)
-            text_en = llm_result.get("translation", "")
-            print(f"[ORCHESTRATOR] Offline Ceviri: '{text_en}'")
+            if text_tr:
+                llm_result = self.translator.translate(text_tr)
+                text_en = llm_result.get("translation", "")
+                print(f"[ORCHESTRATOR] Offline Ceviri: '{text_en}'")
 
-            self.synthesizer.speak(text_en)
-            print("[ORCHESTRATOR] Offline Islem tamamlandi.")
+                self.synthesizer.speak(text_en)
+                print("[ORCHESTRATOR] Offline Islem tamamlandi.")
+        except Exception as e:
+            print(f"[KRITIK HATA] Offline ceviri de basarisiz oldu: {e}")
+            print("[SISTEM] Ollama/XTTS calismıyor olabilir. Dongu devam ediyor.")

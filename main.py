@@ -34,8 +34,11 @@ def main():
     print("="*60)
 
     # 1. Bilesenleri Baslat
+    print("\n[SISTEM] Baslatma: [1/3] STT modulu...")
     transcriber = Transcriber()
+    print("[SISTEM] Baslatma: [2/3] LLM modulu...")
     translator = Translator()
+    print("[SISTEM] Baslatma: [3/3] TTS modulu...")
     synthesizer = Synthesizer()
 
     # 2. Orkestrayi Kur (baslangic moduyla)
