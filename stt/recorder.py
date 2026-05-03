@@ -7,6 +7,7 @@ import time
 import collections
 import sounddevice as sd
 import webrtcvad
+import numpy as np
 
 
 class Recorder:
@@ -172,10 +173,21 @@ class Recorder:
 
     def _write_wav(self, frames: list) -> str:
         """Ses karelerini 16kHz mono WAV olarak benzersiz isimle yazar.
-        Millisaniye timestamp ile isim uretir — dosya üzerine yazma riski yok."""
+        RMS normalizasyon ile ses seviyesini dengeler (fisiltili/yuksek ses ortami)."""
         filename = f"rec_{int(time.time() * 1000)}.wav"
         wav_path = os.path.join(self._tmp_dir, filename)
         audio_bytes = b"".join(frames)
+
+        # ── RMS Normalizasyon ─────────────────────────────────────
+        # Ham sesi float'a cevir, RMS ol, hedef seviyeye cek, kırp
+        samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+        rms = np.sqrt(np.mean(samples ** 2))
+        if rms > 50:   # gercek ses var (saf gurultu/sessizlik degil)
+            gain = min(3000.0 / rms, 10.0)   # hedef RMS=3000, max 10x kazanim
+            samples = np.clip(samples * gain, -32767, 32767)
+        audio_bytes = samples.astype(np.int16).tobytes()
+        # ─────────────────────────────────────────────────────────
+
         with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)   # int16 = 2 byte

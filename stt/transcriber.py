@@ -33,7 +33,7 @@ class Transcriber:
     # local_cpu      : Yerel Whisper base, CPU (offline mod)
     # cloud_auto     : Groq Whisper -> Deepgram -> Local (Fallback)
 
-    VALID_MODES = ("local_gpu", "local_cpu", "cloud_auto")
+    VALID_MODES = ("local_gpu", "local_gpu_hq", "local_cpu", "cloud_auto")
 
     def __init__(self):
         # Baslangic: Online Mod (GPU)
@@ -128,6 +128,8 @@ class Transcriber:
             self._switch_to_cpu()
         elif mode == "local_gpu":
             self._switch_to_gpu()
+        elif mode == "local_gpu_hq":
+            self._switch_to_gpu_hq()
         elif mode.startswith("cloud"):
             # Cloud modlarinda yerel modeli bellekte tutuyoruz (fallback icin)
             # Ama GPU VRAM bosaltilmali
@@ -172,6 +174,24 @@ class Transcriber:
 
         elapsed = time.time() - start_time
         print(f"[SISTEM] STT: GPU moduna gecis tamamlandi. Sure: {elapsed:.2f}sn")
+
+    def _switch_to_gpu_hq(self):
+        """Hot-Swap: medium modeli GPU'ya yukle (yuksek kalite)."""
+        start_time = time.time()
+        print("[SISTEM] STT: Yuksek Kalite moduna geciliyor (medium)...")
+
+        if self.model is not None:
+            del self.model
+            gc.collect()
+
+        self.device = "cuda"
+        self.model_size = "medium"
+        self.compute_type = "int8"
+        print("[SISTEM] STT: Whisper 'medium' GPU'ya yukleniyor...")
+        self.model = self._load_local_model()
+
+        elapsed = time.time() - start_time
+        print(f"[SISTEM] STT: HQ moduna gecis tamamlandi. Sure: {elapsed:.2f}sn")
 
     def _offload_gpu_model(self):
         """GPU modelini VRAM'den bosalt, CPU modeline dusur.

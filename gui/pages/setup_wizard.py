@@ -18,7 +18,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ─── Sabitler ─────────────────────────────────────────────────────────────────
-WIN_W, WIN_H = 660, 520
+WIN_W, WIN_H = 660, 580
 STEP_COUNT   = 3
 
 _API_LINKS = {
@@ -102,11 +102,7 @@ class SetupWizard(ctk.CTk):
         self._step_bar = _StepBar(self, steps=["Donanim", "API Anahtarlari", "Ses & Bitis"])
         self._step_bar.pack(fill="x", padx=0, pady=(0, 0))
 
-        # ── Icerik alani (degisen sayfa buraya) ──────────
-        self._content = ctk.CTkFrame(self, fg_color=_COLORS["bg"], corner_radius=0)
-        self._content.pack(fill="both", expand=True, padx=0, pady=0)
-
-        # ── Alt navigasyon ───────────────────────────────
+        # ── Alt navigasyon (content'ten ÖNCE pack edilmeli!) ─
         nav = ctk.CTkFrame(self, fg_color=_COLORS["accent"], corner_radius=0, height=60)
         nav.pack(fill="x", side="bottom")
         nav.pack_propagate(False)
@@ -133,6 +129,10 @@ class SetupWizard(ctk.CTk):
             command=self._skip
         )
         self._btn_skip.pack(side="right", padx=4, pady=12)
+
+        # ── Icerik alani (nav'dan SONRA pack edilmeli!) ───
+        self._content = ctk.CTkFrame(self, fg_color=_COLORS["bg"], corner_radius=0)
+        self._content.pack(fill="both", expand=True, padx=0, pady=0)
 
     # ── Adim 0: Donanim ──────────────────────────────────────────────────────
 
@@ -203,16 +203,22 @@ class SetupWizard(ctk.CTk):
         ctk.CTkLabel(
             page, text="API Anahtarlarınızı Girin",
             font=ctk.CTkFont(size=18, weight="bold"), text_color="white"
-        ).pack(anchor="w", padx=32, pady=(28, 4))
+        ).pack(anchor="w", padx=32, pady=(20, 4))
 
         ctk.CTkLabel(
             page,
             text="Anahtarlar config.json dosyasına kaydedilir. İstediğiniz zaman Ayarlar'dan güncelleyebilirsiniz.\n"
                  "Şimdilik doldurmak zorunda değilsiniz — atlamak için 'Atla' butonunu kullanın.",
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=580, justify="left"
-        ).pack(anchor="w", padx=32, pady=(0, 18))
+        ).pack(anchor="w", padx=32, pady=(0, 10))
 
-        # Girdi satirlari
+        # Kartlar kayan alanda — yükseklik değişse de kaymayı garanti eder
+        scroll = ctk.CTkScrollableFrame(
+            page, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color=_COLORS["accent"]
+        )
+        scroll.pack(fill="both", expand=True, padx=0, pady=0)
+
         self._api_entries = {}
         services = [
             ("gemini",     "Gemini (Google AI Studio)", "Ücretsiz kota mevcut"),
@@ -220,7 +226,7 @@ class SetupWizard(ctk.CTk):
             ("elevenlabs", "ElevenLabs",                "TTS — ücretsiz 10k karakter/ay"),
         ]
         for key, display, hint in services:
-            self._api_entries[key] = _api_row(page, display, hint, _API_LINKS[display], self.cfg)
+            self._api_entries[key] = _api_row(scroll, display, hint, _API_LINKS[display], self.cfg)
 
     # ── Adim 2: Ses & Bitis ───────────────────────────────────────────────────
 

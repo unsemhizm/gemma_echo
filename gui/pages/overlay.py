@@ -12,6 +12,7 @@ Entegrasyon:
     overlay.mainloop()
 """
 
+import sys
 import queue
 import time
 import customtkinter as ctk
@@ -41,9 +42,9 @@ POLL_MS = 80     # kuyruk yoklama araligi (ms)
 FADE_MS = 4000   # son mesajin solmaya baslama suresi (ms)
 
 
-class Overlay(ctk.CTk):
+class Overlay(ctk.CTkToplevel):
     """
-    Yüzen altyazı penceresi.
+    Yüzen altyazı penceresi (CTkToplevel — HomeWindow'a bağlı).
 
     Parametreler:
         cfg          : ConfigManager ornegi
@@ -74,18 +75,20 @@ class Overlay(ctk.CTk):
         opacity = self.cfg.get("overlay", "opacity", default=0.92)
         self.wm_attributes("-alpha", opacity)
 
-        # Pencere konumu
+        # Pencere konumu — varsayılan: üst-sağ (taskbar ve chat kutusunu kapatmaz)
         self.update_idletasks()
         x = self.cfg.get("overlay", "position_x", default=-1)
         y = self.cfg.get("overlay", "position_y", default=-1)
 
         if x == -1 or y == -1:
             sw = self.winfo_screenwidth()
-            sh = self.winfo_screenheight()
             x  = sw - WIN_W - 24
-            y  = sh - WIN_H - 60   # taskbar ustu
+            y  = 40   # üst-sağ köşe
 
         self.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+
+        # Başlangıçta gizli — HomeWindow'dan açılır
+        self.withdraw()
 
     # ── UI Yapisi ─────────────────────────────────────────────────────────────
 
@@ -259,6 +262,9 @@ class Overlay(ctk.CTk):
         stt_ms  = data.get("stt_ms", 0)
         llm_ms  = data.get("llm_ms", 0)
 
+        # Aktif çeviri — click-through kapat (sürüklenebilsin)
+        self._set_clickthrough(False)
+
         # Metinler
         self._tr_label.configure(text=text_tr, text_color=_C["gray"])
         self._en_label.configure(text=text_en, text_color=_C["white"])
@@ -285,12 +291,31 @@ class Overlay(ctk.CTk):
         self._status_label.configure(text="Hata yakalandı", text_color=_C["red"])
 
     def _fade_to_idle(self):
-        """Bir sure sonra göstergeyi bekleme rengine döndür."""
+        """Bir sure sonra göstergeyi bekleme rengine döndür + click-through aç."""
         self._dot.configure(text_color=_C["yellow"])
         self._status_label.configure(
             text="Hazır · VAD dinliyor", text_color=_C["dim"]
         )
         self._engine_label.configure(text="")
+        self._set_clickthrough(True)   # boşta: fare tıklamalarını geçir
+
+    def _set_clickthrough(self, enable: bool):
+        """
+        Windows: overlay'i fare tıklamalarına geçirgen yapar (WS_EX_TRANSPARENT).
+        Aktif çeviri sırasında kapatılır ki sürükleme çalışsın.
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd  = self.winfo_id()
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)   # GWL_EXSTYLE
+            if enable:
+                ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x80000 | 0x20)
+            else:
+                ctypes.windll.user32.SetWindowLongW(hwnd, -20, style & ~0x20)
+        except Exception:
+            pass
 
     # ── Pencere Sürükleme ─────────────────────────────────────────────────────
 

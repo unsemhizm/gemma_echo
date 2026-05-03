@@ -85,7 +85,12 @@ class FileModeWindow(ctk.CTkToplevel):
         sh = self.winfo_screenheight()
         self.geometry(f"820x620+{(sw-820)//2}+{(sh-620)//2}")
 
-    def show(self):
+    def show(self, filter_type: str = "all"):
+        """
+        filter_type: 'all' | 'video' | 'audio'
+        Dosya seçici ilgili filtre ile açılır.
+        """
+        self._filter_type = filter_type
         self.deiconify()
         self.lift()
         self.focus()

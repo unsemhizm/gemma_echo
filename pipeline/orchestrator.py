@@ -15,6 +15,7 @@ class Orchestrator:
         "online",
         "online_xtts",
         "interactive",
+        "interactive_hq",
         "offline",
         "offline_gpu",
         "hybrid_cloud_io",
@@ -127,6 +128,8 @@ class Orchestrator:
             self._configure_online_xtts()
         elif mode == "interactive":
             self._configure_interactive()
+        elif mode == "interactive_hq":
+            self._configure_interactive_hq()
         elif mode == "offline":
             self._configure_offline()
         elif mode == "offline_gpu":
@@ -171,6 +174,19 @@ class Orchestrator:
         self.translator.unload_local_model()
         self.synthesizer.set_mode("gpu")
         
+        if self.synthesizer.xtts_model is None:
+            self.synthesizer.preload_xtts_background(use_gpu=True)
+
+    # ─── MODE 3b: INTERACTIVE_HQ (Yerel medium Kulak + Bulut Beyin + Yerel Ses)
+    def _configure_interactive_hq(self):
+        """STT: Local GPU medium | LLM: Online | TTS: GPU
+        Interactive modun yuksek kaliteli versiyonu.
+        Whisper medium ile Turkce tanima cok daha dogru, biraz daha yavastir."""
+        self.transcriber.set_mode("local_gpu_hq")
+        self.translator.set_mode("online")
+        self.translator.unload_local_model()
+        self.synthesizer.set_mode("gpu")
+
         if self.synthesizer.xtts_model is None:
             self.synthesizer.preload_xtts_background(use_gpu=True)
 
