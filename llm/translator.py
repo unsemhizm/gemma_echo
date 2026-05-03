@@ -1,11 +1,13 @@
 import os
+import gc
 import time
-import requests
 import string
+import torch
 from dotenv import load_dotenv
 from groq import Groq
 from google import genai
 from google.genai import types
+from llama_cpp import Llama
 
 # Çevresel değişkenleri yükle
 load_dotenv()
@@ -63,8 +65,9 @@ class Translator:
           Katman 2: Gemini API (Gemini 2.5 Flash)→ Hız Yedeği
           Katman 3: Groq (Llama 3.1 8B)          → Hız / Güvenlik Yedeği
 
-        OFFLINE MOD — Yerel Ollama:
-          Gemma 4 E2B Q4_K_M → localhost:11434
+        OFFLINE MOD — Sıfır Bağımlılık (Zero-Dependency):
+          llama-cpp-python → ./models/gemma-4-q4.gguf
+          Talep üzerine yüklenir (lazy load), VRAM israfı olmaz.
         """
         print("[SİSTEM] Translator v8 'Multi-State' Modülü Başlatılıyor...")
         
@@ -90,10 +93,11 @@ class Translator:
         self.groq_client = Groq(api_key=self.groq_key.strip())
         self.groq_model = "llama-3.1-8b-instant"
 
-        # ─── OFFLINE MOTOR ─────────────────────────────────────
+        # ─── OFFLINE MOTOR (llama-cpp / Zero-Dependency) ───────
+        # Model talep üzerine yüklenir — online modda VRAM boşa işgal etmez.
 
-        self.ollama_url = "http://localhost:11434/api/generate"
-        self.ollama_model = "gemma4-echo"  # Modelfile'dan oluşturulan isim
+        self.local_model_path = "./models/gemma-4-q4.gguf"
+        self.local_llm = None  # lazy load: load_local_model() ile yüklenir
 
         # ─── ORTAK PROMPT ──────────────────────────────────────
 
@@ -105,6 +109,40 @@ class Translator:
 
 
     # ═══════════════════════════════════════════════════════════
+    # YEREL MODEL YONETIMI — Lazy Load / Unload
+    # ═══════════════════════════════════════════════════════════
+
+    def load_local_model(self):
+        """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
+        Zaten yüklüyse tekrar yüklemez (idempotent)."""
+        if self.local_llm is not None:
+            return
+
+        print(f"[SISTEM] Yerel LLM yukleniyor: {self.local_model_path}")
+        start = time.time()
+        self.local_llm = Llama(
+            model_path=self.local_model_path,
+            n_gpu_layers=-1,   # Tum katmanlari GPU'ya yukle (-1 = tam GPU)
+            n_ctx=512,
+            verbose=False
+        )
+        elapsed = int((time.time() - start) * 1000)
+        print(f"[SISTEM] Yerel LLM hazir ({elapsed}ms).")
+
+    def unload_local_model(self):
+        """Yerel modeli bellekten ve VRAM'den tamamen bosaltir.
+        Online moda geciste cagrilir — VRAM catismasini onler."""
+        if self.local_llm is None:
+            return
+
+        print("[SISTEM] Yerel LLM VRAM'den bosaltilyior...")
+        del self.local_llm
+        self.local_llm = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        print("[SISTEM] Yerel LLM VRAM'den bosaltildi.")
+
+    # ═══════════════════════════════════════════════════════════
     # MOD YÖNETİMİ
     # ═══════════════════════════════════════════════════════════
 
@@ -112,7 +150,7 @@ class Translator:
         """
         Çeviri modunu değiştirir.
         "online"  → Bulut API'leri (Gemini API [Gemma 4] → Gemini API [Flash] → Groq)
-        "offline" → Yerel Ollama (Gemma 4 E2B Q4_K_M)
+        "offline" → Yerel llama-cpp (./models/gemma-4-q4.gguf, lazy load)
         """
         if mode not in ("online", "offline"):
             raise ValueError(f"Geçersiz mod: {mode}. 'online' veya 'offline' olmalı.")
@@ -237,74 +275,45 @@ class Translator:
             }
 
     # ═══════════════════════════════════════════════════════════
-    # OFFLINE ÇEVİRİ — Yerel Ollama (Gemma 4 E2B Q4_K_M)
+    # OFFLINE ÇEVİRİ — Yerel llama-cpp (Zero-Dependency)
     # ═══════════════════════════════════════════════════════════
 
     def translate_offline(self, text_tr: str, context: list = [], hint: str = "") -> dict:
         """
-        Yerel Ollama üzerinden çeviri yapar.
-        İnternet gerektirmez. GPU'da Gemma 4 E2B Q4_K_M çalışır.
+        Yerel GGUF modeli üzerinden çeviri yapar.
+        İnternet gerektirmez. Model lazy load ile VRAM'e alınır.
         """
+        # Güvenlik: model yüklü değilse yükle (doğrudan offline moda girilince)
+        if self.local_llm is None:
+            self.load_local_model()
+
         user_message = self._build_user_message(text_tr, context, hint)
-        
         start_time = time.time()
+
         try:
-            response = requests.post(
-                "http://localhost:11434/api/chat",
-                json={
-                    "model": self.ollama_model,
-                    "messages": [
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": user_message}
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1
-                    }
-                },
-                timeout=300
+            response = self.local_llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.1,
+                max_tokens=150
             )
-            response.raise_for_status()
-            
-            result = response.json()
+            translation = response["choices"][0]["message"]["content"].strip()
             latency = int((time.time() - start_time) * 1000)
-            
-            # /api/chat formatı: result["message"]["content"]
-            translation = result.get("message", {}).get("content", "").strip()
-            
+
             return {
                 "translation": translation,
                 "latency_ms": latency,
-                "engine": f"Ollama ({self.ollama_model})"
+                "engine": "llama-cpp (local)"
             }
         except Exception as e:
-            print(f"\n[KRİTİK HATA] Offline Çeviri Başarısız: {e}")
+            print(f"\n[KRİTİK HATA] Offline Çeviri Basarisiz: {e}")
             return {
                 "translation": "[ÇEVİRİ HATASI]",
                 "latency_ms": 0,
                 "engine": "Failed"
             }
-
-    # ═══════════════════════════════════════════════════════════
-    # OLLAMA VRAM YÖNETİMİ
-    # ═══════════════════════════════════════════════════════════
-
-    def release_ollama_vram(self):
-        """
-        Ollama'ya keep_alive=0 isteği göndererek Gemma'yı VRAM'den boşaltır.
-        Online moda geçerken çağrılmalıdır.
-        Rapordaki KRİTİK MİMARİ DÜZELTME: OLLAMA KEEP-ALIVE VRAM ÇATIŞMASI çözümü.
-        """
-        try:
-            requests.post(
-                self.ollama_url,
-                json={"model": self.ollama_model, "keep_alive": 0},
-                timeout=5
-            )
-            print("[SİSTEM] Ollama VRAM boşaltıldı (keep_alive=0)")
-        except Exception as e:
-            # Ollama çalışmıyorsa sorun değil — zaten VRAM'de model yok
-            print(f"[BİLGİ] Ollama bağlantısı yok (beklenen davranış): {e}")
 
     # ═══════════════════════════════════════════════════════════
     # YARDIMCI METOTLAR

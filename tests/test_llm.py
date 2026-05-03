@@ -171,10 +171,10 @@ def test_set_mode_invalid(translator_instance):
 # VRAM YÖNETİM TESTİ
 # ═══════════════════════════════════════════════════════════
 
-def test_release_ollama_vram(translator_instance):
-    """release_ollama_vram() metodunun çökmeden çalıştığını test eder."""
-    # Ollama çalışmıyor olsa bile bu metot çökmemeli
-    translator_instance.release_ollama_vram()
+def test_unload_local_model(translator_instance):
+    """unload_local_model() metodunun çökmeden çalıştığını test eder."""
+    # Model yuklu olmasa bile bu metot cokmemel (idempotent)
+    translator_instance.unload_local_model()
 
 
 if __name__ == "__main__":

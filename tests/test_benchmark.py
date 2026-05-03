@@ -73,7 +73,7 @@ def test_benchmark_online(components):
 
     translator.set_mode("online")
     synthesizer.set_mode("online")
-    translator.release_ollama_vram()
+    translator.unload_local_model()
     # Transcriber'in online'da GPU'da oldugundan emin olalim (Eger offline'dan gelmissek)
     transcriber.set_mode("local_gpu")
 

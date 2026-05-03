@@ -145,7 +145,7 @@ class Orchestrator:
         self.synthesizer.offload_xtts_from_gpu()
         self.transcriber.set_mode("cloud_auto")
         self.translator.set_mode("online")
-        self.translator.release_ollama_vram()
+        self.translator.unload_local_model()
         self.synthesizer.set_mode("online")
 
     # ─── MODE 2: ONLINE_XTTS (Bulut Beyin + Yerel Ses) ────────
@@ -153,7 +153,7 @@ class Orchestrator:
         """STT: Cloud Auto | LLM: Online | TTS: GPU"""
         self.transcriber.set_mode("cloud_auto")
         self.translator.set_mode("online")
-        self.translator.release_ollama_vram()
+        self.translator.unload_local_model()
         self.synthesizer.set_mode("gpu")
         
         if self.synthesizer.xtts_model is None:
@@ -164,7 +164,7 @@ class Orchestrator:
         """STT: Local GPU | LLM: Online | TTS: GPU"""
         self.transcriber.set_mode("local_gpu")
         self.translator.set_mode("online")
-        self.translator.release_ollama_vram()
+        self.translator.unload_local_model()
         self.synthesizer.set_mode("gpu")
         
         if self.synthesizer.xtts_model is None:
@@ -200,7 +200,7 @@ class Orchestrator:
         self.synthesizer.offload_xtts_from_gpu()
         self.transcriber.set_mode("local_gpu")
         self.translator.set_mode("online")
-        self.translator.release_ollama_vram()
+        self.translator.unload_local_model()
         self.synthesizer.set_mode("online")
 
     # ═══════════════════════════════════════════════════════════
@@ -289,6 +289,8 @@ class Orchestrator:
             text_tr = stt_result.get("text", "")
 
             if text_tr:
+                # Yerel model lazily VRAM'e yukle (online moddan geliyorsa yuklu olmayabilir)
+                self.translator.load_local_model()
                 llm_result = self.translator.translate(text_tr)
                 text_en = llm_result.get("translation", "")
                 print(f"[ORCHESTRATOR] Offline Ceviri: '{text_en}'")
@@ -297,4 +299,4 @@ class Orchestrator:
                 print("[ORCHESTRATOR] Offline Islem tamamlandi.")
         except Exception as e:
             print(f"[KRITIK HATA] Offline ceviri de basarisiz oldu: {e}")
-            print("[SISTEM] Ollama/XTTS calismıyor olabilir. Dongu devam ediyor.")
+            print("[SISTEM] Yerel model veya XTTS basarisiz. Dongu devam ediyor.")

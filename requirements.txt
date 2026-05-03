@@ -1,0 +1,32 @@
+# Gemma Echo v8 — Gerekli Paketler
+# Güncelleme: Ollama bağımlılığı kaldırıldı, llama-cpp-python eklendi (Zero-Dependency Offline)
+
+# ── STT ──────────────────────────────────────────────────────
+faster-whisper==1.2.1
+groq==1.2.0                # Groq Whisper STT + LLM (Katman 3 fallback)
+
+# ── LLM (Online) ─────────────────────────────────────────────
+google-genai==1.73.1       # Gemini API (Gemma 4 26B + Flash 2.5)
+
+# ── LLM (Offline / Zero-Dependency) ─────────────────────────
+# CUDA destekli kurulum (nvcc gerektirir):
+#   CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-cache-dir --force-reinstall
+# CPU kurulumu (hazır wheel, otomatik):
+#   pip install llama-cpp-python
+llama_cpp_python==0.3.21
+
+# ── TTS ──────────────────────────────────────────────────────
+elevenlabs==2.44.0         # ElevenLabs (online TTS)
+# TTS-v2 (offline/gpu): torchaudio + bağımlılıkları ile gelir
+
+# ── Audio / VAD ──────────────────────────────────────────────
+sounddevice==0.5.5
+webrtcvad-wheels==2.0.14
+
+# ── ML / CUDA ────────────────────────────────────────────────
+torch==2.11.0+cu130
+torchaudio==2.11.0+cu130
+
+# ── Yardımcı ─────────────────────────────────────────────────
+python-dotenv==1.2.2
+requests==2.33.1           # ElevenLabs ve Deepgram STT için
