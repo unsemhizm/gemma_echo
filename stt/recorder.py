@@ -46,6 +46,9 @@ class Recorder:
 
         self.vad = webrtcvad.Vad(aggressiveness)
 
+        # GUI "Durdur" butonu bu event'i set eder
+        self._stop_event = threading.Event()
+
         # Asenkron islem kuyrugu (maks 5 eleman — RAM tasmasini onler)
         self.audio_queue = queue.Queue(maxsize=5)
 
@@ -89,7 +92,7 @@ class Recorder:
                 blocksize=self.frame_size
             ) as stream:
 
-                while True:
+                while not self._stop_event.is_set():
                     raw, overflowed = stream.read(self.frame_size)
                     if overflowed:
                         print("[UYARI] Ses tamponu tasti.")

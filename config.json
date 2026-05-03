@@ -1,0 +1,66 @@
+{
+  "version": "1.0",
+  "first_run": true,
+  "hardware": {
+    "os": "windows",
+    "ram_gb": 31.7,
+    "cpu_cores": 8,
+    "gpu": {
+      "available": true,
+      "type": "cuda",
+      "name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+      "vram_gb": 6.0
+    }
+  },
+  "api_keys": {
+    "gemini": "",
+    "groq": "",
+    "elevenlabs": ""
+  },
+  "elevenlabs_voice_id": "",
+  "elevenlabs_voice_name": "",
+  "mode": {
+    "current": "interactive",
+    "stt": {
+      "backend": "local_gpu",
+      "device": "cuda"
+    },
+    "llm": {
+      "backend": "online",
+      "device": "cpu",
+      "model": "gemma-4"
+    },
+    "tts": {
+      "backend": "gpu",
+      "device": "cuda"
+    }
+  },
+  "recording": {
+    "push_to_talk": false,
+    "vad_aggressiveness": 2,
+    "silence_ms": 900
+  },
+  "overlay": {
+    "always_on_top": true,
+    "opacity": 0.85,
+    "width": 480,
+    "height": 160,
+    "position_x": 1416,
+    "position_y": 858
+  },
+  "file_mode": {
+    "output_dir": "",
+    "save_transcript": true,
+    "save_translation": true
+  },
+  "recommended_profile": {
+    "orchestrator_mode": "interactive",
+    "stt_backend": "local_gpu",
+    "stt_device": "cuda",
+    "llm_backend": "online",
+    "llm_device": "cpu",
+    "tts_backend": "gpu",
+    "tts_device": "cuda",
+    "reason": "NVIDIA GPU tespit edildi (6.0GB VRAM). STT+TTS GPU'da, LLM bulutta calisacak (interactive mod)."
+  }
+}
