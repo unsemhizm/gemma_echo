@@ -61,13 +61,14 @@ class GemmaEchoApp:
     """
 
     def __init__(self):
-        self.cfg      = ConfigManager()
-        self._rq      = queue.Queue()   # orchestrator → overlay koprusu
-        self._overlay: Overlay | None   = None
-        self._backend_ready             = False
-        self._recorder                  = None
-        self._orchestrator              = None
-        self._backend_thread            = None
+        self.cfg           = ConfigManager()
+        self._rq           = queue.Queue()   # orchestrator → overlay koprusu
+        self._overlay: Overlay | None        = None
+        self._file_mode_win                  = None
+        self._backend_ready                  = False
+        self._recorder                       = None
+        self._orchestrator                   = None
+        self._backend_thread                 = None
 
     def run(self):
         if self.cfg.is_first_run():
@@ -89,9 +90,12 @@ class GemmaEchoApp:
     # ── Ana Ekran ─────────────────────────────────────────────────────────────
 
     def _launch_main(self):
-        """Kontrol panelini + overlay'i baslatir."""
-        self._panel  = ControlPanel(self.cfg, app=self)
-        self._overlay = Overlay(self.cfg, result_queue=self._rq)
+        """Kontrol panelini + overlay + dosya modunu baslatir."""
+        from gui.pages.file_mode import FileModeWindow
+
+        self._panel         = ControlPanel(self.cfg, app=self)
+        self._overlay       = Overlay(self.cfg, result_queue=self._rq)
+        self._file_mode_win = FileModeWindow(self.cfg, app=self)
 
         # Ayarlar butonunu overlay'e bagla
         self._overlay._open_settings = self._panel.show
@@ -300,33 +304,21 @@ class ControlPanel(ctk.CTkToplevel):
             self._ptt_switch.select()
 
         # ── Dosya Modu ───────────────────────────────────────────────
-        self._section(body, "Dosya Çevirisi")
+        self._section(body, "Dosya & Medya Çevirisi")
         ctk.CTkLabel(
             body,
-            text="Ses veya video dosyası yükleyin. Transkript + İngilizce çeviri üretilir.",
+            text="Ses veya video dosyası yükleyin. Türkçe transkript + İngilizce çeviri üretilir.",
             font=ctk.CTkFont(size=10), text_color=_C["gray"], wraplength=440
-        ).pack(anchor="w", padx=20, pady=(0, 6))
-
-        file_row = ctk.CTkFrame(body, fg_color="transparent")
-        file_row.pack(fill="x", padx=20, pady=(0, 4))
-
-        self._file_entry = ctk.CTkEntry(
-            file_row, width=330, height=32, placeholder_text="Dosya seçin...",
-            font=ctk.CTkFont(size=11)
-        )
-        self._file_entry.pack(side="left", padx=(0, 8))
+        ).pack(anchor="w", padx=20, pady=(0, 8))
 
         ctk.CTkButton(
-            file_row, text="Gözat", width=80, height=32,
-            fg_color=_C["panel"], hover_color=_C["card"],
-            command=self._browse_file
-        ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(
-            file_row, text="Çevir ▶", width=80, height=32,
-            fg_color=_C["blue"],
-            command=self._process_file
-        ).pack(side="left")
+            body,
+            text="Dosya & Medya Çeviri Penceresini Aç  ↗",
+            width=340, height=36,
+            fg_color=_C["blue"], hover_color="#1a6fc4",
+            font=ctk.CTkFont(size=12),
+            command=self._open_file_mode
+        ).pack(anchor="w", padx=20, pady=(0, 4))
 
         # ── API Anahtarlari ──────────────────────────────────────────
         self._section(body, "API Anahtarları")
@@ -455,23 +447,9 @@ class ControlPanel(ctk.CTkToplevel):
         self._btn_start.configure(state="normal")
         self._btn_stop.configure(state="disabled")
 
-    def _browse_file(self):
-        from tkinter import filedialog
-        path = filedialog.askopenfilename(
-            title="Ses/Video Dosyası Seç",
-            filetypes=[
-                ("Medya dosyaları", "*.wav *.mp3 *.mp4 *.mkv *.m4a *.ogg *.flac"),
-                ("Tüm dosyalar",    "*.*"),
-            ]
-        )
-        if path:
-            self._file_entry.delete(0, "end")
-            self._file_entry.insert(0, path)
-
-    def _process_file(self):
-        path = self._file_entry.get().strip()
-        if path:
-            self.app.process_file(path)
+    def _open_file_mode(self):
+        if self.app._file_mode_win:
+            self.app._file_mode_win.show()
 
     def _save_api(self, service: str, entry: ctk.CTkEntry):
         val = entry.get().strip()

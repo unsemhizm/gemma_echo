@@ -1,7 +1,43 @@
+# ── Ortam / Bağımlılıklar ─────────────────────────────────────
 venv/
 __pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.cache/
+
+# ── Gizli Yapılandırma (API anahtarları burada!) ──────────────
+.env
+config.json
+
+# ── Model Dosyaları (büyük binary'ler) ───────────────────────
+*.gguf
+*.bin
+*.pt
+*.safetensors
+models/
+
+# ── Ses / Video Çıktıları ────────────────────────────────────
 *.wav
 *.mp3
 *.m4a
-.env
-*.gguf
+*.ogg
+*.flac
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+
+# ── Geçici Dosyalar ───────────────────────────────────────────
+.tmp_audio/
+*.tmp
+tmp/
+temp/
+
+# ── IDE / OS ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db

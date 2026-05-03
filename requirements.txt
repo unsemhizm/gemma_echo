@@ -27,6 +27,11 @@ webrtcvad-wheels==2.0.14
 torch==2.11.0+cu130
 torchaudio==2.11.0+cu130
 
+# ── GUI ──────────────────────────────────────────────────────
+customtkinter>=5.2.2       # Modern Tkinter arayüzü
+psutil>=5.9.0              # RAM/CPU donanım bilgisi
+ffmpeg-python>=0.2.0       # Video → WAV ses ayıklama (sistem ffmpeg gerektirir)
+
 # ── Yardımcı ─────────────────────────────────────────────────
 python-dotenv==1.2.2
 requests==2.33.1           # ElevenLabs ve Deepgram STT için
