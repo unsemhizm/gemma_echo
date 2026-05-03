@@ -1,7 +1,9 @@
 import os
 import gc
 import time
+import queue
 import string
+import threading
 import torch
 from dotenv import load_dotenv
 from groq import Groq
@@ -197,6 +199,64 @@ class Translator:
     # (Gemini API [Gemma 4] → Gemini API [Flash] → Groq)
     # ═══════════════════════════════════════════════════════════
 
+    def _gemini_call(self, model_name: str, user_message: str, first_token_timeout: float = 8.0):
+        """Streaming + First-Token Timeout (TTFT) mimarisi.
+
+        - API'ye generate_content_stream ile baglanir.
+        - Ilk token first_token_timeout saniye icinde gelmezse → API donmus → TimeoutError.
+        - Ilk token geldiyse API canlidir; akisin geri kalanini (token basi 30s) toplar.
+        - Daemon thread: ana thread hic bloklanmaz.
+        """
+        _DONE = object()  # sentinel: stream bitti
+        chunk_queue = queue.Queue()
+
+        def _stream():
+            try:
+                for chunk in self.gemini_client.models.generate_content_stream(
+                    model=model_name,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        temperature=0.2,
+                        max_output_tokens=300
+                    ),
+                    contents=user_message
+                ):
+                    chunk_queue.put(chunk)
+                chunk_queue.put(_DONE)
+            except Exception as e:
+                chunk_queue.put(e)
+
+        threading.Thread(target=_stream, daemon=True).start()
+
+        # TTFT kontrolu: ilk token first_token_timeout icinde gelmeli
+        try:
+            first = chunk_queue.get(timeout=first_token_timeout)
+        except queue.Empty:
+            raise TimeoutError(
+                f"Gemini ({model_name}) TTFT asimi ({first_token_timeout}s) — API donmus."
+            )
+
+        if isinstance(first, Exception):
+            raise first
+        if first is _DONE:
+            return ""
+
+        # Ilk token geldi — akisin geri kalanini topla (token basi maks 30s)
+        parts = [first.text] if hasattr(first, "text") and first.text else []
+        while True:
+            try:
+                chunk = chunk_queue.get(timeout=30.0)
+            except queue.Empty:
+                break
+            if chunk is _DONE:
+                break
+            if isinstance(chunk, Exception):
+                raise chunk
+            if hasattr(chunk, "text") and chunk.text:
+                parts.append(chunk.text)
+
+        return "".join(parts)
+
     def translate_online(self, text_tr: str, context: list = [], hint: str = "") -> dict:
         """
         Bulut API'leri üzerinden çeviri yapar.
@@ -209,44 +269,32 @@ class Translator:
         # --- KATMAN 1: GEMINI API (GEMMA 4) ---
         gemini_gemma_start = time.time()
         try:
-            response = self.gemini_client.models.generate_content(
-                model=self.gemma4_api_model,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt,
-                    temperature=0.2,
-                    max_output_tokens=150
-                ),
-                contents=user_message
-            )
+            translation = self._gemini_call(self.gemma4_api_model, user_message)
             latency = int((time.time() - gemini_gemma_start) * 1000)
             return {
-                "translation": response.text.strip(),
+                "translation": translation.strip(),
                 "latency_ms": latency,
                 "engine": f"Gemini API ({self.gemma4_api_model})"
             }
+        except TimeoutError:
+            print(f"\n[UYARI] Gemini API (Gemma 4) TTFT Asimi (8s) -> Gemini 2.5 Flash'a Geciliyor...")
         except Exception as e:
-            print(f"\n[UYARI] Gemini API (Gemma 4) Hatası: {e} -> Gemini 2.5 Flash'a Geçiliyor...")
+            print(f"\n[UYARI] Gemini API (Gemma 4) Hatasi: {e} -> Gemini 2.5 Flash'a Geciliyor...")
 
         # --- KATMAN 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
         try:
-            response = self.gemini_client.models.generate_content(
-                model=self.gemini_fallback_model,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_prompt,
-                    temperature=0.2,
-                    max_output_tokens=150
-                ),
-                contents=user_message
-            )
+            translation = self._gemini_call(self.gemini_fallback_model, user_message)
             latency = int((time.time() - gemini_flash_start) * 1000)
             return {
-                "translation": response.text.strip(),
+                "translation": translation.strip(),
                 "latency_ms": latency,
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
+        except TimeoutError:
+            print(f"\n[UYARI] Gemini 2.5 Flash TTFT Asimi (8s) -> Groq'a Geciliyor...")
         except Exception as e:
-            print(f"\n[UYARI] Gemini 2.5 Flash Hatası: {e} -> Groq'a Geçiliyor...")
+            print(f"\n[UYARI] Gemini 2.5 Flash Hatasi: {e} -> Groq'a Geciliyor...")
 
         # --- KATMAN 3: GROQ ---
         start_time = time.time()
@@ -257,8 +305,8 @@ class Translator:
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                temperature=0.1, 
-                max_tokens=150
+                temperature=0.1,
+                max_tokens=300
             )
             latency = int((time.time() - start_time) * 1000)
             return {

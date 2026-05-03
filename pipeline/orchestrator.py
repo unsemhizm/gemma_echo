@@ -9,13 +9,14 @@ from tts.synthesizer import Synthesizer
 
 class Orchestrator:
     # ═══════════════════════════════════════════════════════════
-    # 6 CALISMA MODU — VRAM BUTCE HARITASI (6GB Limit)
+    # 8 CALISMA MODU — VRAM BUTCE HARITASI
     # ═══════════════════════════════════════════════════════════
     VALID_MODES = (
         "online",
         "online_xtts",
         "interactive",
         "offline",
+        "offline_gpu",
         "hybrid_cloud_io",
         "hybrid_cloud_stt",
         "online_local_stt"
@@ -127,6 +128,8 @@ class Orchestrator:
             self._configure_interactive()
         elif mode == "offline":
             self._configure_offline()
+        elif mode == "offline_gpu":
+            self._configure_offline_gpu()
         elif mode == "hybrid_cloud_io":
             self._configure_hybrid_cloud_io()
         elif mode == "hybrid_cloud_stt":
@@ -172,11 +175,29 @@ class Orchestrator:
 
     # ─── MODE 4: OFFLINE (Tam Yerel / Survival Modu) ──────────
     def _configure_offline(self):
-        """STT: Local CPU | LLM: Offline | TTS: Offline"""
+        """STT: Local CPU | LLM: Offline (CPU) | TTS: Offline (CPU)"""
         self.synthesizer.offload_xtts_from_gpu()
         self.transcriber.set_mode("local_cpu")
         self.translator.set_mode("offline")
         self.synthesizer.set_mode("offline")
+
+    # ─── MODE 5: OFFLINE_GPU (Tam Yerel Tam GPU / Yuksek VRAM) ─
+    def _configure_offline_gpu(self):
+        """STT: Local GPU | LLM: Offline (GPU) | TTS: GPU
+
+        Tum bilesenleri GPU'da calistirir. Internet gerektirmez.
+        Gereksinim: ~6GB+ VRAM (RTX 3060 Ti, RTX 4070, vb.)
+          - Whisper small  : ~1.5 GB
+          - GGUF LLM       : ~2.3 GB  (n_gpu_layers=-1, tam GPU)
+          - XTTS-v2        : ~2.5 GB
+        """
+        self.transcriber.set_mode("local_gpu")
+        self.translator.set_mode("offline")
+        self.translator.load_local_model()
+        self.synthesizer.set_mode("gpu")
+
+        if self.synthesizer.xtts_model is None:
+            self.synthesizer.preload_xtts_background(use_gpu=True)
 
     # ─── MODE 5: HYBRID_CLOUD_IO (Bulut Kulak/Ağız + Yerel Beyin)
     def _configure_hybrid_cloud_io(self):
