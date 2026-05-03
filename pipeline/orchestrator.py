@@ -37,6 +37,7 @@ class Orchestrator:
         self.synthesizer = synthesizer
         self.current_mode = None  # set_mode icinde ayarlanacak
         self.history = []  # Kayan Bellek — son 3 Turkce cumle (zamir cozumu icin)
+        self.result_queue = None  # GUI koprusu — set edilirse her process() sonucu buraya gider
 
         # Baslangic modunu konfigure et
         self.set_mode(initial_mode)
@@ -283,8 +284,22 @@ class Orchestrator:
             total_ms = int((time.time() - total_start) * 1000)
             print(f"[ORCHESTRATOR] Islem tamamlandi. E2E: {total_ms}ms (STT:{stt_ms} + LLM:{llm_ms} + TTS:{tts_ms})")
 
+            if self.result_queue is not None:
+                self.result_queue.put({
+                    "text_tr": text_tr,
+                    "text_en": text_en,
+                    "engine": llm_result.get("engine"),
+                    "latency_ms": total_ms,
+                    "stt_ms": stt_ms,
+                    "llm_ms": llm_ms,
+                    "tts_ms": tts_ms,
+                    "error": None,
+                })
+
         except Exception as e:
             print(f"\n[ORCHESTRATOR] HATA YAKALANDI: {e}")
+            if self.result_queue is not None:
+                self.result_queue.put({"error": str(e)})
             self._fallback(audio_path)
 
     # ═══════════════════════════════════════════════════════════
