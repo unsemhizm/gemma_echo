@@ -1,6 +1,9 @@
 import os
 import sys
 import wave
+import queue
+import threading
+import time
 import collections
 import sounddevice as sd
 import webrtcvad
@@ -11,12 +14,12 @@ class Recorder:
     VAD tabanli gercek zamanli mikrofon kaydedici.
     webrtcvad ile konusma algilama, sounddevice ile ses yakalama.
 
-    Akis:
-      1. 16kHz mono ses akisini 30ms'lik cerceveler halinde okur.
-      2. Her cerceveyi webrtcvad'a gonderir (is_speech?).
-      3. On-tampon (300ms) konusmalarla dolu olunca kaydi tetikler.
-      4. Kayit sirasinda 900ms kesintisiz sessizlik algilayinca
-         cumleyi tamamlanmis sayar, .wav'a yazar, orchestrator'a iletir.
+    Producer-Consumer Mimarisi:
+      Producer (mikrofon): 16kHz mono ses akisini 30ms cerceveler halinde okur,
+        VAD ile cumle bitisini algilayinca benzersiz isimli WAV yazar ve
+        audio_queue'ya atar. Mikrofon hic kapanmaz.
+      Consumer (islem thread): Kuyruktan WAV alir, orchestrator.process()
+        cagirip dosyayi temizler. Producer ile paralel calisir.
     """
 
     SAMPLE_RATE = 16000
@@ -43,11 +46,13 @@ class Recorder:
 
         self.vad = webrtcvad.Vad(aggressiveness)
 
-        # Gecici WAV dosyasi
+        # Asenkron islem kuyrugu (maks 5 eleman — RAM tasmasini onler)
+        self.audio_queue = queue.Queue(maxsize=5)
+
+        # Gecici WAV dizini (her kayit benzersiz isim alir)
         _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _tmp_dir = os.path.join(_project_dir, ".tmp_audio")
-        os.makedirs(_tmp_dir, exist_ok=True)
-        self._tmp_wav = os.path.join(_tmp_dir, "live_recording.wav")
+        self._tmp_dir = os.path.join(_project_dir, ".tmp_audio")
+        os.makedirs(self._tmp_dir, exist_ok=True)
 
     # ═══════════════════════════════════════════════════════════
     # ANA DINLEME DONGUSU
@@ -55,14 +60,21 @@ class Recorder:
 
     def run(self):
         """
-        Engelleme (blocking) dinleme dongusu.
-        Ctrl+C ile durdurulur.
+        Producer-Consumer dinleme dongusu. Ctrl+C ile durdurulur.
+
+        Producer (bu metod): Mikrofonu hic kapamadan dinler, cumle bitince
+          WAV'i kuyruga atar.
+        Consumer (_consumer thread): Kuyruktan WAV ceker, STT->LLM->TTS
+          hattini calistirip dosyayi temizler. Paralel calisir.
         """
         print("\n" + "=" * 50)
         print("[RECORDER] CANLI MIKROFON MODU BASLATILDI")
         print(f"[RECORDER] VAD aggressiveness={self.aggressiveness} | Sessizlik esigi=900ms")
         print("[RECORDER] Konusmaya baslayin. Cikis: Ctrl+C")
         print("=" * 50 + "\n")
+
+        # Consumer thread'i baslat (daemon: Ctrl+C'de ana program kapaninca o da kapanir)
+        threading.Thread(target=self._consumer, daemon=True).start()
 
         pre_trigger_buf = collections.deque(maxlen=self._pre_trigger_size)
         voiced_frames = []   # Kaydedilen ses kareleri
@@ -112,10 +124,17 @@ class Recorder:
                         if silent_count >= self._silence_threshold:
                             triggered = False
                             silent_count = 0
-                            print("[RECORDER] Cumle tamamlandi, isleniyor...")
 
                             wav_path = self._write_wav(voiced_frames)
-                            self.orchestrator.process(wav_path)
+                            try:
+                                self.audio_queue.put_nowait(wav_path)
+                                print(f"[RECORDER] Cumle kuyruga eklendi (bekleyen: {self.audio_queue.qsize()})")
+                            except queue.Full:
+                                print("[UYARI] Kuyruk dolu (Limit: 5)! Yeni ses atlandi.")
+                                try:
+                                    os.remove(wav_path)
+                                except OSError:
+                                    pass
 
                             voiced_frames = []
                             pre_trigger_buf.clear()
@@ -124,16 +143,39 @@ class Recorder:
             print("\n[RECORDER] Dinleme durduruldu.")
 
     # ═══════════════════════════════════════════════════════════
+    # CONSUMER: ASENKRON ISLEM THREAD'I
+    # ═══════════════════════════════════════════════════════════
+
+    def _consumer(self):
+        """Kuyruktan WAV alir, orchestrator.process() cagirip dosyayi siler.
+        Producer ile tam paralel calisir — mikrofon hic kapanmaz.
+        Hata olsa bile thread olmez; dongu devam eder."""
+        while True:
+            wav_path = self.audio_queue.get()
+            try:
+                self.orchestrator.process(wav_path)
+            except Exception as e:
+                print(f"[HATA] Consumer thread islem hatasi (Atlatildi): {e}")
+            finally:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+                self.audio_queue.task_done()
+
+    # ═══════════════════════════════════════════════════════════
     # YARDIMCI: WAV YAZICI
     # ═══════════════════════════════════════════════════════════
 
     def _write_wav(self, frames: list) -> str:
-        """Ses karelerini (bytes listesi) 16kHz mono WAV olarak yazar.
-        Yolu dondurur."""
+        """Ses karelerini 16kHz mono WAV olarak benzersiz isimle yazar.
+        Millisaniye timestamp ile isim uretir — dosya üzerine yazma riski yok."""
+        filename = f"rec_{int(time.time() * 1000)}.wav"
+        wav_path = os.path.join(self._tmp_dir, filename)
         audio_bytes = b"".join(frames)
-        with wave.open(self._tmp_wav, "wb") as wf:
+        with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)   # int16 = 2 byte
             wf.setframerate(self.SAMPLE_RATE)
             wf.writeframes(audio_bytes)
-        return self._tmp_wav
+        return wav_path
