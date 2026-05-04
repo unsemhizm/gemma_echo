@@ -13,7 +13,7 @@ from llama_cpp import Llama
 # Çevresel değişkenleri yükle
 load_dotenv()
 
-CULTURAL_MAP = {
+CULTURAL_MAP_TR_EN = {
     "hoş geldin": "Welcome.",
     "hoş bulduk": "Glad to be here.",
     "görüşürüz": "See you later.",
@@ -41,7 +41,7 @@ CULTURAL_MAP = {
     "afiyet olsun": "Enjoy your meal.",
     "bereket versin": "Thanks, may it bring abundance.",
     "ziyade olsun": "Thank you for the meal.",
-    "iyi çalışmalar": "Have a good shift/work.",
+    "iyi çalışmaları": "Have a good shift/work.",
     "eyvallah": "Thanks, alright.",
     "estağfurullah": "Not at all / Don't mention it.",
     "aman diyeyim": "Watch out / Be careful.",
@@ -54,6 +54,35 @@ CULTURAL_MAP = {
     "allah rahatlık versin": "Rest in peace.",
     "elveda": "Farewell.",
     "hoşça kal": "Goodbye."
+}
+
+CULTURAL_MAPS = {
+    ("tr", "en"): CULTURAL_MAP_TR_EN
+}
+
+# ── Persona Şablonları (Dinamik — {tgt_lang} ile hedef dile göre uyarlanır) ──
+PERSONA_TEMPLATES = {
+    "official": (
+        "Tone: Act as a senior diplomat or academic professional. "
+        "Use the most formal, polished, and respectful register of {tgt_lang}. "
+        "Avoid all slang, contractions, and colloquialisms."
+    ),
+    "streamer": (
+        "Tone: Act as an energetic live streamer speaking to a {tgt_lang}-speaking audience. "
+        "Use popular internet slang, gaming terminology, and hype expressions that are "
+        "native to {tgt_lang} internet culture. "
+        "Do NOT copy English slang word-for-word — find the culturally equivalent term in {tgt_lang}."
+    ),
+    "casual": (
+        "Tone: Act as a close friend of the speaker. "
+        "Use everyday, relaxed, and casual {tgt_lang} conversational style "
+        "with friendly expressions and informal greetings natural to {tgt_lang} culture."
+    ),
+    "literary": (
+        "Tone: Act as a skilled literary translator. "
+        "Use vivid, expressive, and elegant {tgt_lang}. "
+        "Preserve the emotional tone and imagery of the original text."
+    ),
 }
 
 class Translator:
@@ -100,13 +129,28 @@ class Translator:
         self.local_model_path = "./models/gemma-4-q4.gguf"
         self.local_llm = None  # lazy load: load_local_model() ile yüklenir
 
-        # ─── ORTAK PROMPT ──────────────────────────────────────
+        # Aktif persona ("none" | "official" | "streamer" | "casual" | "literary")
+        self.persona = "none"
 
-        # Sistem Promptu: LLM'in gevezelik yapmasını engeller
-        self.system_prompt = (
-            "You are a lightning-fast translator. Translate the following Turkish text to English. "
-            "Reply ONLY with the English translation. Do not add quotes, explanations, or any other text."
+        # Varsayilan sistem promptu — translate() cagrisi oncesi direct offline cagrilari icin
+        self.system_prompt = self._build_system_prompt()
+
+    def set_persona(self, persona: str):
+        """Aktif persona stilini ayarlar. Gecersiz deger verilirse 'none' kullanilir."""
+        valid = {"none", "official", "streamer", "casual", "literary"}
+        self.persona = persona if persona in valid else "none"
+
+    def _build_system_prompt(self, src_lang="Turkish", tgt_lang="English") -> str:
+        """Dinamik sistem promptu olusturur. Aktif persona varsa stil talimati eklenir."""
+        base = (
+            f"You are a lightning-fast translator. Translate the following {src_lang} text to {tgt_lang}. "
+            f"Reply ONLY with the {tgt_lang} translation. Do not add quotes, explanations, or any other text."
         )
+        persona_template = PERSONA_TEMPLATES.get(self.persona, "")
+        if persona_template:
+            persona_instr = persona_template.format(tgt_lang=tgt_lang)
+            return f"{base}\n{persona_instr}"
+        return base
 
 
     # ═══════════════════════════════════════════════════════════
@@ -164,14 +208,19 @@ class Translator:
     # ANA ÇEVİRİ METODU (Yönlendirici)
     # ═══════════════════════════════════════════════════════════
 
-    def translate(self, text_tr: str, context: list = []) -> dict:
+    def translate(self, text_tr: str, context: list = [], src_lang="tr", tgt_lang="en", 
+                  src_name="Turkish", tgt_name="English") -> dict:
         """
-        Gelen Türkçe metni İngilizceye çevirir.
+        Gelen metni hedef dile çevirir.
         Aktif moda göre online veya offline motora yönlendirir.
         
         Args:
-            text_tr:  Çevrilecek Türkçe metin
-            context:  Zamir çevirisi için önceki cümleler (opsiyonel)
+            text_tr:   Çevrilecek metin
+            context:   Zamir çevirisi için önceki cümleler (opsiyonel)
+            src_lang:  Kaynak dil kodu (tr, en, ...)
+            tgt_lang:  Hedef dil kodu
+            src_name:  LLM promptu için kaynak dil adı
+            tgt_name:  LLM promptu için hedef dil adı
         
         Returns:
             dict: {"translation": str, "latency_ms": int, "engine": str}
@@ -179,7 +228,7 @@ class Translator:
         if not text_tr or len(text_tr.strip()) == 0:
             return {"translation": "", "latency_ms": 0, "engine": "None"}
 
-        cultural_result, match_type = self._check_cultural(text_tr)
+        cultural_result, match_type = self._check_cultural(text_tr, src_lang, tgt_lang)
 
         if match_type == "exact":
             return {"translation": cultural_result, "latency_ms": 0, "engine": "CulturalMap"}
@@ -188,6 +237,9 @@ class Translator:
         if match_type == "partial":
             tr_idiom, en_idiom = cultural_result
             hint = f"CRITICAL RULE: Translate '{tr_idiom}' as '{en_idiom}', translate the rest naturally.\n\n"
+
+        # Sistem promptunu guncelle
+        self.system_prompt = self._build_system_prompt(src_name, tgt_name)
 
         if self.mode == "online":
             return self.translate_online(text_tr, context, hint)
@@ -371,18 +423,23 @@ class Translator:
         """Removes punctuation for clean matching."""
         return text.translate(str.maketrans('', '', string.punctuation)).strip()
 
-    def _check_cultural(self, text_tr: str) -> tuple[str | tuple[str, str] | None, str]:
-        fixed_text = self._tr_lower(text_tr)
+    def _check_cultural(self, text: str, src_lang: str, tgt_lang: str) -> tuple[str | tuple[str, str] | None, str]:
+        fixed_text = self._tr_lower(text)
         clean_input = self._strip_punct(fixed_text)
 
+        # Dil cifti icin harita var mi?
+        cmap = CULTURAL_MAPS.get((src_lang, tgt_lang))
+        if not cmap:
+            return None, "none"
+
         # Stage 1: Exact Match
-        for key, value in CULTURAL_MAP.items():
+        for key, value in cmap.items():
             clean_key = self._strip_punct(self._tr_lower(key))
             if clean_input == clean_key:
                 return value, "exact"
 
         # Stage 2: Partial Match
-        for key, value in CULTURAL_MAP.items():
+        for key, value in cmap.items():
             clean_key = self._strip_punct(self._tr_lower(key))
             if clean_key in clean_input:
                 return (key, value), "partial"

@@ -219,7 +219,7 @@ class Transcriber:
     # ANA TRANSKRIPSIYON METODU (Yonlendirici)
     # ═══════════════════════════════════════════════════════════
 
-    def transcribe(self, audio_path):
+    def transcribe(self, audio_path, source_lang="tr"):
         """Ses dosyasini metne cevirir.
         Aktif moda gore yerel veya bulut motora yonlendirir."""
 
@@ -233,21 +233,21 @@ class Transcriber:
             return {"text": "", "duration_ms": 0, "latency_ms": 0, "no_speech_prob": 1.0}
 
         if self.mode == "cloud_auto":
-            return self._transcribe_cloud_auto(audio_path)
-        return self._transcribe_local(audio_path)
+            return self._transcribe_cloud_auto(audio_path, source_lang=source_lang)
+        return self._transcribe_local(audio_path, source_lang=source_lang)
 
     # ═══════════════════════════════════════════════════════════
     # YEREL TRANSKRIPSIYON — Whisper (GPU veya CPU)
     # ═══════════════════════════════════════════════════════════
 
-    def _transcribe_local(self, audio_path):
+    def _transcribe_local(self, audio_path, source_lang="tr"):
         """Yerel Whisper modeli ile transkripsiyon."""
         start_time = time.time()
 
         try:
             segments, info = self.model.transcribe(
                 audio_path,
-                language="tr",
+                language=source_lang,
                 beam_size=2,
                 best_of=2,
                 vad_filter=True,
@@ -279,7 +279,7 @@ class Transcriber:
     # BULUT TRANSKRIPSIYON — Şelale: Groq -> Deepgram -> Local
     # ═══════════════════════════════════════════════════════════
 
-    def _transcribe_cloud_auto(self, audio_path):
+    def _transcribe_cloud_auto(self, audio_path, source_lang="tr"):
         """Groq Whisper Large-v3 API dener.
         Basarisiz olursa Deepgram Nova-3 dener.
         O da basarisiz olursa yerel Whisper'a duser."""
@@ -292,7 +292,7 @@ class Transcriber:
                     result = self.groq_client.audio.transcriptions.create(
                         model="whisper-large-v3",
                         file=audio_file,
-                        language="tr"
+                        language=source_lang
                     )
 
                 latency_ms = (time.time() - start_time) * 1000
@@ -313,7 +313,7 @@ class Transcriber:
         if self.deepgram_key:
             start_time = time.time()
             try:
-                url = "https://api.deepgram.com/v1/listen?model=nova-3&language=tr&smart_format=true"
+                url = f"https://api.deepgram.com/v1/listen?model=nova-3&language={source_lang}&smart_format=true"
                 headers = {
                     "Authorization": f"Token {self.deepgram_key}",
                     "Content-Type": "audio/wav"
@@ -344,13 +344,13 @@ class Transcriber:
                 print(f"[UYARI] Deepgram STT basarisiz: {e} -> Yerel Whisper'a dusuluyor...")
 
         # 3. YEREL WHISPER FALLBACK
-        return self._fallback_local_whisper(audio_path)
+        return self._fallback_local_whisper(audio_path, source_lang=source_lang)
 
     # ═══════════════════════════════════════════════════════════
     # FALLBACK SELALESI — Cloud basarisiz olursa yerel Whisper
     # ═══════════════════════════════════════════════════════════
 
-    def _fallback_local_whisper(self, audio_path):
+    def _fallback_local_whisper(self, audio_path, source_lang="tr"):
         """Cloud STT cokerse yerel Whisper (CPU) ile metne dok.
         Sistem asla cokmez — hata toleransi."""
         print("[SISTEM] STT FALLBACK: Yerel Whisper'a dusuyorum...")
@@ -362,4 +362,4 @@ class Transcriber:
             self.compute_type = "int8"
             self.model = self._load_local_model()
 
-        return self._transcribe_local(audio_path)
+        return self._transcribe_local(audio_path, source_lang=source_lang)

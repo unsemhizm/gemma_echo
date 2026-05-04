@@ -18,6 +18,7 @@ import time
 import customtkinter as ctk
 
 from gui.config import ConfigManager
+from gui.i18n   import t
 
 # ─── Tema ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -60,6 +61,10 @@ class Overlay(ctk.CTkToplevel):
         self._drag_y      = 0
         self._last_update = 0.0   # son guncelleme zaman damgasi
         self._fade_job    = None  # solma zamanlayicisi
+        
+        # Sürükleme durumu
+        self._last_x = 0
+        self._last_y = 0
 
         self._setup_window()
         self._build_ui()
@@ -127,7 +132,7 @@ class Overlay(ctk.CTkToplevel):
         self._dot.bind("<B1-Motion>",     self._drag_move)
 
         title = ctk.CTkLabel(
-            left, text="GEMMA ECHO",
+            left, text=t("app_name"),
             font=ctk.CTkFont(family="Helvetica", size=10, weight="bold"),
             text_color=_C["dim"]
         )
@@ -138,6 +143,20 @@ class Overlay(ctk.CTkToplevel):
         # Sağ: butonlar
         right = ctk.CTkFrame(bar, fg_color="transparent")
         right.pack(side="right", padx=6)
+
+        ctk.CTkButton(
+            right, text="A+", width=22, height=20,
+            fg_color="transparent", hover_color=_C["dim"],
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["dim"],
+            command=self._font_increase
+        ).pack(side="left", padx=1)
+
+        ctk.CTkButton(
+            right, text="A-", width=22, height=20,
+            fg_color="transparent", hover_color=_C["dim"],
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["dim"],
+            command=self._font_decrease
+        ).pack(side="left", padx=1)
 
         ctk.CTkButton(
             right, text="⚙", width=22, height=20,
@@ -174,14 +193,14 @@ class Overlay(ctk.CTkToplevel):
         tr_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
 
         ctk.CTkLabel(
-            tr_row, text="TR",
+            tr_row, text=t("tr_label"),
             font=ctk.CTkFont(size=8, weight="bold"),
             text_color=_C["dim"],
             width=20
         ).pack(side="left", anchor="n", padx=(0, 6))
 
         self._tr_label = ctk.CTkLabel(
-            tr_row, text="Konuşmayı bekleniyor...",
+            tr_row, text=t("waiting"),
             font=ctk.CTkFont(size=12), text_color=_C["gray"],
             anchor="w", justify="left", wraplength=420
         )
@@ -196,15 +215,17 @@ class Overlay(ctk.CTkToplevel):
         en_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(2, 10))
 
         ctk.CTkLabel(
-            en_row, text="EN",
+            en_row, text=t("en_label"),
             font=ctk.CTkFont(size=8, weight="bold"),
             text_color=_C["blue"],
             width=20
         ).pack(side="left", anchor="n", padx=(0, 6))
 
+        # Font boyutunu config'den oku
+        fsize = self.cfg.get("overlay", "font_size", default=13)
         self._en_label = ctk.CTkLabel(
             en_row, text="—",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=fsize, weight="bold"),
             text_color=_C["white"],
             anchor="w", justify="left", wraplength=420
         )
@@ -217,7 +238,7 @@ class Overlay(ctk.CTkToplevel):
         bar.grid_propagate(False)
 
         self._status_label = ctk.CTkLabel(
-            bar, text="Hazır · VAD dinliyor",
+            bar, text=t("ready_vad"),
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         )
         self._status_label.pack(side="left", padx=10)
@@ -272,7 +293,7 @@ class Overlay(ctk.CTkToplevel):
         # Durum cubugu
         e2e_s = f"{e2e_ms/1000:.1f}s"
         self._status_label.configure(
-            text=f"STT {stt_ms}ms · LLM {llm_ms}ms · E2E {e2e_s}",
+            text=f"{t('stt')} {stt_ms}ms · {t('llm')} {llm_ms}ms · {t('e2e')} {e2e_s}",
             text_color=_C["green"]
         )
         self._engine_label.configure(text=engine, text_color=_C["blue"])
@@ -281,20 +302,24 @@ class Overlay(ctk.CTkToplevel):
 
         # Birkaç saniye sonra "dinliyor" moduna don
         if self._fade_job:
-            self.after_cancel(self._fade_job)
+            try:
+                self.after_cancel(self._fade_job)
+            except:
+                pass
+            self._fade_job = None
         self._fade_job = self.after(FADE_MS, self._fade_to_idle)
 
     def _show_error(self, msg: str):
-        self._tr_label.configure(text="Hata", text_color=_C["red"])
+        self._tr_label.configure(text=t("error"), text_color=_C["red"])
         self._en_label.configure(text=msg[:80], text_color=_C["red"])
         self._dot.configure(text_color=_C["red"])
-        self._status_label.configure(text="Hata yakalandı", text_color=_C["red"])
+        self._status_label.configure(text=t("error_caught"), text_color=_C["red"])
 
     def _fade_to_idle(self):
         """Bir sure sonra göstergeyi bekleme rengine döndür."""
         self._dot.configure(text_color=_C["yellow"])
         self._status_label.configure(
-            text="Hazır · VAD dinliyor", text_color=_C["dim"]
+            text=t("ready_vad"), text_color=_C["dim"]
         )
         self._engine_label.configure(text="")
 
@@ -320,14 +345,20 @@ class Overlay(ctk.CTkToplevel):
 
     def _drag_start(self, event):
         self._dragging = True
-        self._drag_x   = event.x_root - self.winfo_x()
-        self._drag_y   = event.y_root - self.winfo_y()
+        self._last_x = event.x_root
+        self._last_y = event.y_root
 
     def _drag_move(self, event):
         if self._dragging:
-            x = event.x_root - self._drag_x
-            y = event.y_root - self._drag_y
-            self.geometry(f"+{x}+{y}")
+            dx = event.x_root - self._last_x
+            dy = event.y_root - self._last_y
+            
+            new_x = self.winfo_x() + dx
+            new_y = self.winfo_y() + dy
+            
+            self.geometry(f"+{new_x}+{new_y}")
+            self._last_x = event.x_root
+            self._last_y = event.y_root
 
     def _drag_end(self, event):
         self._dragging = False
@@ -352,6 +383,20 @@ class Overlay(ctk.CTkToplevel):
         """Ayarlar paneli acilacak (app.py tarafindan override edilir)."""
         pass   # app.py bu metodu monkey-patch edecek
 
+    def _font_increase(self):
+        curr = self._en_label.cget("font").cget("size")
+        new_size = min(curr + 1, 24)
+        self._en_label.configure(font=ctk.CTkFont(size=new_size, weight="bold"))
+        self.cfg.set("overlay", "font_size", new_size)
+        self.cfg.save()
+
+    def _font_decrease(self):
+        curr = self._en_label.cget("font").cget("size")
+        new_size = max(curr - 1, 8)
+        self._en_label.configure(font=ctk.CTkFont(size=new_size, weight="bold"))
+        self.cfg.set("overlay", "font_size", new_size)
+        self.cfg.save()
+
     # ── Dis Arayuz ───────────────────────────────────────────────────────────
 
     def set_status(self, msg: str, color: str = None):
@@ -365,7 +410,7 @@ class Overlay(ctk.CTkToplevel):
         self.after(0, lambda: [
             self._dot.configure(text_color=_C["green"]),
             self._status_label.configure(
-                text="Kaydediliyor...", text_color=_C["green"]
+                text=t("recording"), text_color=_C["green"]
             ),
         ])
 
@@ -374,7 +419,7 @@ class Overlay(ctk.CTkToplevel):
         self.after(0, lambda: [
             self._dot.configure(text_color=_C["blue"]),
             self._status_label.configure(
-                text="İşleniyor...", text_color=_C["blue"]
+                text=t("processing"), text_color=_C["blue"]
             ),
         ])
 

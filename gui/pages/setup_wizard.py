@@ -11,6 +11,7 @@ import webbrowser
 import customtkinter as ctk
 
 from gui.config import ConfigManager
+from gui.i18n   import t
 from gui.hardware_scan import scan as hw_scan
 
 # ─── Tema ─────────────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ class SetupWizard(ctk.CTk):
         self._step       = 0
         self._pages      = []                 # her adimin Frame'i
 
-        self.title("Gemma Echo — Kurulum")
+        self.title(f"{t('app_name')} \u2014 {t('setup_title')}")
         self.geometry(f"{WIN_W}x{WIN_H}")
         self.resizable(False, False)
         self.configure(fg_color=_COLORS["bg"])
@@ -93,13 +94,13 @@ class SetupWizard(ctk.CTk):
         ).pack(side="left", padx=24, pady=16)
 
         ctk.CTkLabel(
-            hdr, text="Kurulum Sihirbazi",
+            hdr, text=t("setup_title"),
             font=ctk.CTkFont(size=13),
             text_color="#aabbcc"
         ).pack(side="left", padx=0, pady=20)
 
         # ── Adim Gostergesi ──────────────────────────────
-        self._step_bar = _StepBar(self, steps=["Donanim", "API Anahtarlari", "Ses & Bitis"])
+        self._step_bar = _StepBar(self, steps=[t("step_hw"), t("step_api"), t("step_voice")])
         self._step_bar.pack(fill="x", padx=0, pady=(0, 0))
 
         # ── Alt navigasyon (content'ten ÖNCE pack edilmeli!) ─
@@ -108,7 +109,7 @@ class SetupWizard(ctk.CTk):
         nav.pack_propagate(False)
 
         self._btn_back = ctk.CTkButton(
-            nav, text="← Geri", width=110, height=36,
+            nav, text=f"\u2190 {t('back')}", width=110, height=36,
             fg_color="transparent", hover_color=_COLORS["accent"],
             border_width=1, border_color="#aabbcc",
             command=self._prev_step
@@ -116,14 +117,14 @@ class SetupWizard(ctk.CTk):
         self._btn_back.pack(side="left", padx=20, pady=12)
 
         self._btn_next = ctk.CTkButton(
-            nav, text="İleri →", width=140, height=36,
+            nav, text=f"{t('next')} \u2192", width=140, height=36,
             fg_color=_COLORS["blue"],
             command=self._next_step
         )
         self._btn_next.pack(side="right", padx=20, pady=12)
 
         self._btn_skip = ctk.CTkButton(
-            nav, text="Atla", width=90, height=36,
+            nav, text=t("skip"), width=90, height=36,
             fg_color="transparent", hover_color=_COLORS["accent"],
             text_color="#aabbcc",
             command=self._skip
@@ -141,12 +142,12 @@ class SetupWizard(ctk.CTk):
         self._pages.append(page)
 
         ctk.CTkLabel(
-            page, text="Sisteminiz Analiz Edildi",
+            page, text=t("system_analyzed"),
             font=ctk.CTkFont(size=18, weight="bold"), text_color="white"
         ).pack(anchor="w", padx=32, pady=(28, 4))
 
         ctk.CTkLabel(
-            page, text="Donanim taraması tamamlandı. Aşağıdaki profil sizin için otomatik seçildi.",
+            page, text=t("hw_scan_complete"),
             font=ctk.CTkFont(size=12), text_color="#aabbcc", wraplength=580
         ).pack(anchor="w", padx=32, pady=(0, 16))
 
@@ -165,7 +166,7 @@ class SetupWizard(ctk.CTk):
             f"{gpu['name']}  ({gpu['vram_gb']} GB VRAM)"
             if gpu["type"] == "cuda"
             else gpu["name"] if gpu["available"]
-            else "GPU bulunamadı — CPU modu"
+            else "GPU bulunamadı"
         )
 
         rows = [
@@ -185,7 +186,7 @@ class SetupWizard(ctk.CTk):
 
         ctk.CTkLabel(
             prof_card,
-            text=f"  Önerilen Mod: {p['orchestrator_mode'].upper()}",
+            text=f"  {t('recommended_mode')}: {p['orchestrator_mode'].upper()}",
             font=ctk.CTkFont(size=13, weight="bold"), text_color=_COLORS["blue"]
         ).pack(anchor="w", padx=14, pady=(10, 2))
 
@@ -201,14 +202,13 @@ class SetupWizard(ctk.CTk):
         self._pages.append(page)
 
         ctk.CTkLabel(
-            page, text="API Anahtarlarınızı Girin",
+            page, text=t("enter_api_keys"),
             font=ctk.CTkFont(size=18, weight="bold"), text_color="white"
         ).pack(anchor="w", padx=32, pady=(20, 4))
 
         ctk.CTkLabel(
             page,
-            text="Anahtarlar config.json dosyasına kaydedilir. İstediğiniz zaman Ayarlar'dan güncelleyebilirsiniz.\n"
-                 "Şimdilik doldurmak zorunda değilsiniz — atlamak için 'Atla' butonunu kullanın.",
+            text=t("api_save_hint"),
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=580, justify="left"
         ).pack(anchor="w", padx=32, pady=(0, 10))
 
@@ -235,13 +235,13 @@ class SetupWizard(ctk.CTk):
         self._pages.append(page)
 
         ctk.CTkLabel(
-            page, text="ElevenLabs Ses Seçimi",
+            page, text=t("voice_selection"),
             font=ctk.CTkFont(size=18, weight="bold"), text_color="white"
         ).pack(anchor="w", padx=32, pady=(28, 4))
 
         ctk.CTkLabel(
             page,
-            text="ElevenLabs Voice ID girin. Sesi daha sonra Ayarlar > TTS bölümünden de değiştirebilirsiniz.",
+            text=t("voice_hint"),
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=580
         ).pack(anchor="w", padx=32, pady=(0, 18))
 
@@ -270,7 +270,7 @@ class SetupWizard(ctk.CTk):
         self._voice_entry.grid(row=0, column=1, rowspan=2, padx=10, pady=10, sticky="ew")
 
         ctk.CTkButton(
-            voice_frame, text="Sesleri Gör →", width=110, height=36,
+            voice_frame, text=f"{t('show')} \u2192", width=110, height=36,
             fg_color=_COLORS["blue"],
             command=lambda: webbrowser.open(_VOICE_LINK)
         ).grid(row=0, column=2, rowspan=2, padx=(0, 14), pady=10)
@@ -282,7 +282,7 @@ class SetupWizard(ctk.CTk):
         summary_card.pack(fill="x", padx=32, pady=(0, 14))
 
         ctk.CTkLabel(
-            summary_card, text="  Kurulum Özeti",
+            summary_card, text=f"  {t('setup_summary_title')}",
             font=ctk.CTkFont(size=13, weight="bold"), text_color=_COLORS["blue"]
         ).pack(anchor="w", padx=14, pady=(12, 6))
 
@@ -296,8 +296,7 @@ class SetupWizard(ctk.CTk):
         # Kapat notu
         ctk.CTkLabel(
             page,
-            text="'Kurulumu Tamamla' butonuna tıkladıktan sonra uygulama ana ekrana geçecek.\n"
-                 "Tüm ayarlara istediğiniz zaman ⚙ Ayarlar menüsünden erişebilirsiniz.",
+            text=t("setup_finish_hint"),
             font=ctk.CTkFont(size=10), text_color="#666", wraplength=580, justify="left"
         ).pack(anchor="w", padx=32, pady=(4, 0))
 
@@ -317,10 +316,10 @@ class SetupWizard(ctk.CTk):
         # Buton metinleri
         self._btn_back.configure(state="normal" if step > 0 else "disabled")
         if step == STEP_COUNT - 1:
-            self._btn_next.configure(text="Kurulumu Tamamla ✓")
+            self._btn_next.configure(text=t("finish_setup"))
             self._btn_skip.configure(state="disabled")
         else:
-            self._btn_next.configure(text="İleri →")
+            self._btn_next.configure(text=f"{t('next')} \u2192")
             self._btn_skip.configure(state="normal")
 
     def _next_step(self):
@@ -369,14 +368,14 @@ class SetupWizard(ctk.CTk):
         """Son adim ozet etiketini guncelle."""
         lines = []
         p = self._hw["recommended_profile"]
-        lines.append(f"Mod          : {p['orchestrator_mode'].upper()}")
+        lines.append(f"{t('summary_mode'):<13}: {p['orchestrator_mode'].upper()}")
 
         for service in ("gemini", "groq", "elevenlabs"):
-            status = "✓ Girildi" if self.cfg.has_api_key(service) else "— Girilmedi"
+            status = t("summary_api_entered") if self.cfg.has_api_key(service) else t("summary_api_missing")
             lines.append(f"{service.capitalize():<13}: {status}")
 
         vid = self.cfg.get("elevenlabs_voice_id", default="")
-        lines.append(f"Voice ID     : {vid if vid else '— Girilmedi (varsayılan kullanılacak)'}")
+        lines.append(f"Voice ID     : {vid if vid else t('summary_voice_default')}")
         self._summary_label.configure(text="\n".join(lines))
 
 
@@ -468,7 +467,7 @@ def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> c
 
     # Sag: Link butonu
     ctk.CTkButton(
-        frame, text="Anahtar Al →", width=105, height=32,
+        frame, text=t("get_key"), width=105, height=32,
         fg_color=_COLORS["blue"], font=ctk.CTkFont(size=11),
         command=lambda u=url: webbrowser.open(u)
     ).pack(side="left", padx=(0, 10), pady=10)

@@ -32,6 +32,11 @@ customtkinter>=5.2.2       # Modern Tkinter arayüzü
 psutil>=5.9.0              # RAM/CPU donanım bilgisi
 ffmpeg-python>=0.2.0       # Video → WAV ses ayıklama (sistem ffmpeg gerektirir)
 
+# ── Belge Okuma (FAZ 4 — Kitap Cevirisi) ─────────────────────
+pdfplumber>=0.10.0         # PDF okuma (document_translator.py)
+python-docx>=1.1.0         # DOCX okuma (document_translator.py)
+# ebooklib>=0.18           # EPUB destegi — opsiyonel, ikinci asama
+
 # ── Yardımcı ─────────────────────────────────────────────────
 python-dotenv==1.2.2
 requests==2.33.1           # ElevenLabs ve Deepgram STT için

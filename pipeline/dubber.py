@@ -39,7 +39,8 @@ class DubbingPipeline:
     # ANA PIPELINE
     # ═══════════════════════════════════════════════════════════
 
-    def process(self, video_path: str, output_path: str, progress_cb=None):
+    def process(self, video_path: str, output_path: str, src_lang="tr", tgt_lang="en", 
+                src_name="Turkish", tgt_name="English", progress_cb=None):
         """
         Tam dublaj pipeline'ini calistirir.
 
@@ -72,9 +73,9 @@ class DubbingPipeline:
 
             # ── 2. Whisper transkript ──────────────────────────────────
             prog(0.10, "Whisper transkript olusturuluyor...", "#5b9ef9")
-            segments = self._transcribe_segments(wav_path)
+            segments = self._transcribe_segments(wav_path, language=src_lang)
             if not segments:
-                raise RuntimeError("Videoda Turkce konusma taninamadi.")
+                raise RuntimeError(f"Videoda {src_name} konusma taninamadi.")
             prog(0.22, f"{len(segments)} segment tanindi.", "#23d05e")
 
             # ── 3. Yerel Gemma 4 Q4 ile ceviri ────────────────────────
@@ -87,7 +88,13 @@ class DubbingPipeline:
             for i, seg in enumerate(segments):
                 p = 0.24 + 0.28 * (i / total)
                 prog(p, f"Ceviri: {i+1}/{total}  \"{seg['text'][:40]}\"", "#5b9ef9")
-                result = self.translator.translate_offline(seg["text"])
+                result = self.translator.translate(
+                    seg["text"], 
+                    src_lang=src_lang, 
+                    tgt_lang=tgt_lang,
+                    src_name=src_name,
+                    tgt_name=tgt_name
+                )
                 text_en = result.get("translation", "").strip()
                 translated.append({**seg, "text_en": text_en})
 
@@ -157,11 +164,11 @@ class DubbingPipeline:
     # ADIM 2: ZAMAN DAMGALI TRANSKRIPT
     # ═══════════════════════════════════════════════════════════
 
-    def _transcribe_segments(self, wav_path: str) -> list:
+    def _transcribe_segments(self, wav_path: str, language="tr") -> list:
         """Faster-whisper ile her segment icin start/end/text doner."""
         segments_iter, _ = self.transcriber.model.transcribe(
             wav_path,
-            language="tr",
+            language=language,
             beam_size=2,
             best_of=2,
             vad_filter=True,

@@ -71,9 +71,12 @@ def _default_config(hw: dict) -> dict:
 
         # ── Kayit Modu ─────────────────────────────────────────────
         "recording": {
-            "push_to_talk":    False,   # True: bas-konus | False: VAD otomatik
-            "vad_aggressiveness": 2,    # 0-3 arasi (webrtcvad)
-            "silence_ms":      900,     # Cumle bitis sessizlik esigi (ms)
+            "push_to_talk":         False,  # True: bas-konus | False: VAD otomatik
+            "vad_aggressiveness":   3,      # 0-3 (3 en agresif)
+            "silence_ms":           900,    # Cumle sonu sessizlik suresi (ms)
+            "streaming_enabled":    True,   # Noktalama bazli erken gonderim
+            "paragraph_silence_ms": 2000,   # Paragraf sonu (uzun sessizlik)
+            "min_phrase_len":       15,     # Minimum frame sayisi
         },
 
         # ── Overlay Pencere ────────────────────────────────────────
@@ -91,6 +94,27 @@ def _default_config(hw: dict) -> dict:
             "output_dir":        "",    # Bos: kaynak dosya konumuna yaz
             "save_transcript":   True,  # TR transkript .txt olarak kaydedilsin mi
             "save_translation":  True,  # EN ceviri .txt olarak kaydedilsin mi
+        },
+
+        # ── Dil Ayarlari ───────────────────────────────────────────
+        "language": {
+            "source":      "tr",          # Kaynak dil kodu (ISO 639-1)
+            "target":      "en",          # Hedef dil kodu
+            "source_name": "Turkish",     # LLM promptu için kaynak dil adı
+            "target_name": "English",     # LLM promptu için hedef dil adı
+            "ui_language": "tr",          # Arayüz dili
+        },
+
+        # ── Çeviri Karakteri (Persona) ─────────────────────────
+        # "none" | "official" | "streamer" | "casual" | "literary"
+        "persona": "none",
+
+
+        # ── Yayıncı / İçerik Üretici Ayarları ──────────────────────
+        "broadcaster": {
+            "enabled":             False, # Sanal mikrofona yönlendirme aktif mi?
+            "output_device_index": None,  # Seçilen cihaz ID'si (None=Varsayılan)
+            "output_device_name":  "Default",
         },
 
         # ── Onerilen Profil (bilgi amacli) ────────────────────────

@@ -16,6 +16,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from gui.config import ConfigManager
+from gui.i18n   import t
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -45,6 +46,17 @@ _LLM_CHUNK   = 400
 _AUDIO_EXT   = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
 _VIDEO_EXT   = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts"}
 _ALL_EXT     = _AUDIO_EXT | _VIDEO_EXT
+_DOC_EXT     = {".txt", ".pdf", ".docx"}
+
+# Desteklenen dil secenekleri (BookView icin)
+_LANGS = [
+    ("Turkish",  "tr"),
+    ("English",  "en"),
+    ("German",   "de"),
+    ("Spanish",  "es"),
+    ("French",   "fr"),
+]
+_LANG_NAMES = [l[0] for l in _LANGS]
 
 
 # ── Yardimci widget fabrikaları ────────────────────────────────────────────────
@@ -108,7 +120,7 @@ class MainWindow(ctk.CTk):
         self.cfg = cfg
         self.app = app
 
-        self.title("Gemma Echo")
+        self.title(t("app_name"))
         self.geometry(f"{WIN_W}x{WIN_H}")
         self.minsize(800, 560)
         self.configure(fg_color=_C["bg"])
@@ -143,6 +155,7 @@ class MainWindow(ctk.CTk):
         self._views = {
             "live":     LiveView(shell, cfg=self.cfg, app=self.app),
             "media":    MediaView(shell, cfg=self.cfg, app=self.app),
+            "book":     BookView(shell, cfg=self.cfg, app=self.app),
             "text":     TextView(shell, cfg=self.cfg, app=self.app),
             "settings": SettingsView(shell, cfg=self.cfg, app=self.app),
         }
@@ -159,7 +172,7 @@ class MainWindow(ctk.CTk):
 
     def _poll_backend(self):
         if self.app._backend_ready:
-            self._sidebar.set_status("Hazir  \u2713", _C["green"])
+            self._sidebar.set_status(t("ready_tick"), _C["green"])
         else:
             self.after(1000, self._poll_backend)
 
@@ -175,10 +188,11 @@ class MainWindow(ctk.CTk):
 
 class _Sidebar(ctk.CTkFrame):
     _NAV = [
-        ("live",     "\U0001f399",  "Canli Ceviri"),
-        ("media",    "\U0001f3ac",  "Medya"),
-        ("text",     "\U0001f4dd",  "Metin"),
-        ("settings", "\u2699",      "Ayarlar"),
+        ("live",     "\U0001f399",  "nav_live"),
+        ("media",    "\U0001f3ac",  "nav_media"),
+        ("book",     "\U0001f4d6",  "nav_book"),
+        ("text",     "\U0001f4dd",  "nav_text"),
+        ("settings", "\u2699",      "nav_settings"),
     ]
 
     def __init__(self, master, on_nav, app):
@@ -225,15 +239,15 @@ class _Sidebar(ctk.CTkFrame):
         nav.pack(fill="x", pady=(8, 0))
 
         ctk.CTkLabel(
-            nav, text="MODLAR",
+            nav, text=t("modes"),
             font=ctk.CTkFont(size=9, weight="bold"),
             text_color=_C["dim"]
         ).pack(anchor="w", padx=18, pady=(10, 4))
 
-        for key, icon, label in self._NAV:
+        for key, icon, label_key in self._NAV:
             btn = ctk.CTkButton(
                 nav,
-                text=f"  {icon}   {label}",
+                text=f"  {icon}   {t(label_key)}",
                 font=ctk.CTkFont(size=12),
                 fg_color="transparent",
                 hover_color=_C["surface2"],
@@ -264,7 +278,7 @@ class _Sidebar(ctk.CTkFrame):
         self._dot.pack(side="left")
 
         self._lbl = ctk.CTkLabel(
-            row2, text="Yukleniyor...",
+            row2, text=t("loading_models"),
             font=ctk.CTkFont(size=9),
             text_color=_C["muted"], anchor="w"
         )
@@ -301,14 +315,14 @@ class LiveView(ctk.CTkFrame):
         self._build()
 
     def _build(self):
-        _header(self, "\U0001f399  Canli Ceviri",
-                "Mikrofon girdisini gercek zamanli Turkce \u2192 Ingilizce cevirir")
+        _header(self, f"\U0001f399  {t('live_title')}",
+                t("live_subtitle"))
 
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
         # ── Kayit Kontrolu ────────────────────────────────────────────
-        inner = _card(scroll, "Kayit Kontrolu")
+        inner = _card(scroll, t("rec_control"))
 
         # Durum satirı
         status_row = ctk.CTkFrame(
@@ -325,7 +339,7 @@ class LiveView(ctk.CTkFrame):
 
         self._slbl = ctk.CTkLabel(
             status_row,
-            text="Hazir  \u2014  Baslamak icin \u25b6 butonuna basin",
+            text=t("live_ready_hint"),
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         )
         self._slbl.pack(side="left", fill="x", expand=True)
@@ -336,7 +350,7 @@ class LiveView(ctk.CTkFrame):
 
         self._btn_start = ctk.CTkButton(
             btn_row,
-            text="\u25b6  Basla",
+            text=f"\u25b6  {t('start')}",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=_C["green"], hover_color="#1aad4e",
             height=46, corner_radius=12,
@@ -346,7 +360,7 @@ class LiveView(ctk.CTkFrame):
 
         self._btn_stop = ctk.CTkButton(
             btn_row,
-            text="\u25a0  Durdur",
+            text=f"\u25a0  {t('stop')}",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=_C["surface2"], hover_color=_C["red_bg"],
             text_color=_C["dim"],
@@ -363,12 +377,12 @@ class LiveView(ctk.CTkFrame):
         lf = ctk.CTkFrame(ptt_row, fg_color="transparent")
         lf.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            lf, text="Bas-Konus (Push-to-Talk)",
+            lf, text=t("ptt"),
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=_C["text"], anchor="w"
         ).pack(anchor="w")
         ctk.CTkLabel(
-            lf, text="Kapali iken VAD otomatik konusma algilar",
+            lf, text=t("ptt_hint"),
             font=ctk.CTkFont(size=10), text_color=_C["muted"], anchor="w"
         ).pack(anchor="w")
 
@@ -382,20 +396,19 @@ class LiveView(ctk.CTkFrame):
         self._ptt.pack(side="right")
 
         # ── Altyazi Kontrolu ──────────────────────────────────────────
-        ov = _card(scroll, "Altyazi Penceresi")
+        ov = _card(scroll, t("overlay_title"))
         ov_row = ctk.CTkFrame(ov, fg_color="transparent")
         ov_row.pack(fill="x")
 
         ctk.CTkLabel(
             ov_row,
-            text="Gercek zamanli TR/EN altyazi penceresi. "
-                 "Kayit basladiginda otomatik gosterilir.",
+            text=t("overlay_hint"),
             font=ctk.CTkFont(size=11), text_color=_C["muted"],
             anchor="w", wraplength=500
         ).pack(side="left", fill="x", expand=True)
 
         ctk.CTkButton(
-            ov_row, text="Goster", width=80, height=34,
+            ov_row, text=t("show"), width=80, height=34,
             fg_color=_C["blue_bg"], hover_color=_C["surface2"],
             text_color=_C["blue"], corner_radius=10,
             font=ctk.CTkFont(size=11),
@@ -403,11 +416,11 @@ class LiveView(ctk.CTkFrame):
         ).pack(side="right")
 
         # ── Ipuclari ──────────────────────────────────────────────────
-        tips = _card(scroll, "Ipuclari")
+        tips = _card(scroll, t("tips"))
         for tip in [
-            "\u2022  Gurultulu ortamda VAD hassasiyetini Ayarlar'dan dusunun.",
-            "\u2022  Overlay penceresi diger uygulamalarin ustunde kalir.",
-            "\u2022  Kayit sirasinda 'Medya' sekmesinden dosya cevirisi de yapabilirsiniz.",
+            t("tip1"),
+            t("tip2"),
+            t("tip3"),
         ]:
             ctk.CTkLabel(
                 tips, text=tip,
@@ -420,8 +433,8 @@ class LiveView(ctk.CTkFrame):
     def _start(self):
         if not self.app._backend_ready:
             messagebox.showinfo(
-                "Modeller Hazirlaniyor",
-                "Modeller henuz yukleniyor.\nBir dakika bekleyip tekrar deneyin."
+                t("modeller_hazirlaniyor"),
+                t("modeller_yukleniyor_bekle")
             )
             return
         self.app.start_live()
@@ -432,7 +445,7 @@ class LiveView(ctk.CTkFrame):
         )
         self._sdot.configure(text_color=_C["green"])
         self._slbl.configure(
-            text="Canli dinleme aktif  \u2014  konusun...",
+            text=t("live_active_hint"),
             text_color=_C["green"]
         )
         if self.app._overlay:
@@ -448,7 +461,7 @@ class LiveView(ctk.CTkFrame):
         )
         self._sdot.configure(text_color=_C["dim"])
         self._slbl.configure(
-            text="Durduruldu  \u2014  Baslamak icin \u25b6 butonuna basin",
+            text=t("stopped_hint"),
             text_color=_C["muted"]
         )
 
@@ -476,8 +489,8 @@ class MediaView(ctk.CTkFrame):
         self._build()
 
     def _build(self):
-        _header(self, "\U0001f3ac  Medya Cevirisi",
-                "Transkript/ceviri icin  \u25b6 Cevir  |  Ingilizce dublaj icin  \U0001f3ac Dublaj")
+        _header(self, f"\U0001f3ac  {t('media_title')}",
+                t("media_subtitle"))
 
         # ── Dosya secim cubugu ─────────────────────────────────────────
         bar = ctk.CTkFrame(
@@ -491,7 +504,7 @@ class MediaView(ctk.CTkFrame):
 
         self._file_entry = ctk.CTkEntry(
             bar_in,
-            placeholder_text="Ses veya video dosyasi secin...",
+            placeholder_text=t("select_file"),
             font=ctk.CTkFont(size=11),
             fg_color=_C["surface2"], border_color=_C["border"],
             height=36, corner_radius=10
@@ -499,14 +512,14 @@ class MediaView(ctk.CTkFrame):
         self._file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         ctk.CTkButton(
-            bar_in, text="Gozat", width=76, height=36,
+            bar_in, text=t("browse"), width=76, height=36,
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=10, font=ctk.CTkFont(size=11),
             command=self._browse
         ).pack(side="left", padx=(0, 6))
 
         self._btn_process = ctk.CTkButton(
-            bar_in, text="\u25b6  Cevir", width=90, height=36,
+            bar_in, text=f"\u25b6  {t('translate')}", width=90, height=36,
             fg_color=_C["blue"], hover_color="#4080d0",
             corner_radius=10, font=ctk.CTkFont(size=12, weight="bold"),
             command=self._start_processing
@@ -514,7 +527,7 @@ class MediaView(ctk.CTkFrame):
         self._btn_process.pack(side="left", padx=(0, 6))
 
         self._btn_cancel = ctk.CTkButton(
-            bar_in, text="\u25a0 Iptal", width=70, height=36,
+            bar_in, text=f"\u25a0 {t('cancel')}", width=70, height=36,
             fg_color=_C["red_bg"], hover_color=_C["red"],
             text_color=_C["red"], corner_radius=10,
             state="disabled", command=self._cancel
@@ -522,7 +535,7 @@ class MediaView(ctk.CTkFrame):
         self._btn_cancel.pack(side="left", padx=(0, 6))
 
         self._btn_dub = ctk.CTkButton(
-            bar_in, text="\U0001f3ac  Dublaj", width=90, height=36,
+            bar_in, text=f"\U0001f3ac  {t('dubbing')}", width=90, height=36,
             fg_color="#2a1a4a", hover_color="#4a2a7a",
             text_color="#c084fc", corner_radius=10,
             font=ctk.CTkFont(size=12, weight="bold"),
@@ -543,7 +556,7 @@ class MediaView(ctk.CTkFrame):
         self._progress.pack(side="left", fill="x", expand=True, pady=12)
 
         self._prog_lbl = ctk.CTkLabel(
-            prog_frame, text="Hazir",
+            prog_frame, text=t("ready"),
             font=ctk.CTkFont(size=10),
             text_color=_C["dim"], width=180, anchor="e"
         )
@@ -557,13 +570,13 @@ class MediaView(ctk.CTkFrame):
         mid.rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            mid, text="Turkce Transkript  (STT)",
+            mid, text=t("tr_transcript"),
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=_C["muted"]
         ).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 4))
 
         ctk.CTkLabel(
-            mid, text="Ingilizce Ceviri",
+            mid, text=t("en_translation"),
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=_C["blue"]
         ).grid(row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 4))
@@ -592,13 +605,13 @@ class MediaView(ctk.CTkFrame):
         bot.pack(fill="x", side="bottom")
         bot.pack_propagate(False)
 
-        for label, cmd in [
-            ("TR Kaydet",      lambda: self._save("tr")),
-            ("EN Kaydet",      lambda: self._save("en")),
-            ("Ikisini Kaydet", lambda: (self._save("tr"), self._save("en"))),
+        for label_key, cmd in [
+            ("save_tr",      lambda: self._save("tr")),
+            ("save_en",      lambda: self._save("en")),
+            ("save_both",    lambda: (self._save("tr"), self._save("en"))),
         ]:
             ctk.CTkButton(
-                bot, text=label, height=28, width=120,
+                bot, text=t(label_key), height=28, width=120,
                 fg_color=_C["surface2"], hover_color=_C["border"],
                 corner_radius=8, font=ctk.CTkFont(size=10),
                 command=cmd
@@ -613,7 +626,7 @@ class MediaView(ctk.CTkFrame):
 
     def _browse(self):
         path = filedialog.askopenfilename(
-            title="Ses veya Video Dosyasi Sec",
+            title=t("browse"),
             filetypes=[
                 ("Tum medya",    "*.wav *.mp3 *.ogg *.flac *.m4a *.aac "
                                   "*.mp4 *.mkv *.avi *.mov *.webm"),
@@ -633,7 +646,7 @@ class MediaView(ctk.CTkFrame):
             box.delete("0.0", "end")
             box.configure(state="disabled")
         self._progress.set(0)
-        self._prog_lbl.configure(text="Hazir", text_color=_C["dim"])
+        self._prog_lbl.configure(text=t("ready"), text_color=_C["dim"])
         self._elapsed.configure(text="")
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
@@ -641,23 +654,22 @@ class MediaView(ctk.CTkFrame):
     def _start_processing(self):
         path = self._file_entry.get().strip()
         if not path:
-            messagebox.showwarning("Dosya Secilmedi", "Lutfen once bir dosya secin.")
+            messagebox.showwarning(t("file_not_selected"), t("select_file_first"))
             return
         if not os.path.exists(path):
-            messagebox.showerror("Bulunamadi", f"Dosya mevcut degil:\n{path}")
+            messagebox.showerror(t("file_not_found"), t("file_exists_error", path))
             return
         ext = os.path.splitext(path)[1].lower()
         if ext not in _ALL_EXT:
             messagebox.showwarning(
-                "Desteklenmeyen Format",
-                f"'{ext}' desteklenmiyor.\nDesteklenenler: "
-                f"{', '.join(sorted(_ALL_EXT))}"
+                t("unsupported_format"),
+                t("unsupported_ext", ext, ", ".join(sorted(_ALL_EXT)))
             )
             return
         if not getattr(self.app, "_backend_ready", False):
             messagebox.showwarning(
-                "Backend Hazir Degil",
-                "STT/LLM modelleri henuz yukleniyor."
+                t("backend_not_ready_models"),
+                t("models_still_loading")
             )
             return
 
@@ -689,8 +701,8 @@ class MediaView(ctk.CTkFrame):
             return
         if not self.app._backend_ready:
             messagebox.showinfo(
-                "Modeller Hazirlaniyor",
-                "STT/LLM/TTS modelleri henuz yukleniyor.\nBir dakika bekleyip tekrar deneyin."
+                t("modeller_hazirlaniyor"),
+                t("modeller_yukleniyor_bekle")
             )
             return
 
@@ -726,7 +738,7 @@ class MediaView(ctk.CTkFrame):
                 text_color=_C["green"]
             ))
         except Exception as e:
-            self._set_progress(0, f"Dublaj hatasi: {e}", _C["red"])
+            self._set_progress(0, t("dubbing_error", str(e)), _C["red"])
         finally:
             self._dubbing = False
             self.after(0, lambda: [
@@ -743,10 +755,10 @@ class MediaView(ctk.CTkFrame):
             ext = os.path.splitext(src)[1].lower()
 
             if ext in _VIDEO_EXT:
-                self._set_progress(0.05, "Video'dan ses ayiklaniyor...", _C["yellow"])
+                self._set_progress(0.05, t("extracting_audio"), _C["yellow"])
                 wav, owns = self._to_wav(src)
             elif ext != ".wav":
-                self._set_progress(0.05, "Ses donusturuluyor...", _C["yellow"])
+                self._set_progress(0.05, t("converting_audio"), _C["yellow"])
                 wav, owns = self._to_wav(src)
             else:
                 wav = src
@@ -754,16 +766,16 @@ class MediaView(ctk.CTkFrame):
             if wav is None or not self._processing:
                 return
 
-            self._set_progress(0.20, "Transkript olusturuluyor (Whisper)...", _C["blue"])
+            self._set_progress(0.20, t("generating_transcript"), _C["blue"])
             res    = self.app._orchestrator.transcriber.transcribe(wav)
             txt_tr = res.get("text", "").strip()
 
             if not txt_tr:
-                self._set_progress(1.0, "Ses taninamadi.", _C["red"])
+                self._set_progress(1.0, t("speech_not_recognized"), _C["red"])
                 return
 
             self._set_text(self._tr_box, txt_tr)
-            self._set_progress(0.55, "Ceviri yapiliyor...", _C["blue"])
+            self._set_progress(0.55, t("translating"), _C["blue"])
 
             if not self._processing:
                 return
@@ -776,7 +788,7 @@ class MediaView(ctk.CTkFrame):
 
             self._set_text(self._en_box, txt_en, _C["text"])
             elapsed = time.time() - t0
-            self._set_progress(1.0, f"Tamamlandi  \u2713", _C["green"])
+            self._set_progress(1.0, t("done_tick"), _C["green"])
             self.after(0, lambda: self._elapsed.configure(
                 text=f"Sure: {elapsed:.1f}s", text_color=_C["dim"]
             ))
@@ -892,6 +904,325 @@ class MediaView(ctk.CTkFrame):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Kitap / Belge Ceviri View  (FAZ 4)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BookView(ctk.CTkFrame):
+    def __init__(self, master, cfg: ConfigManager, app):
+        super().__init__(master, fg_color=_C["bg"], corner_radius=0)
+        self.cfg = cfg
+        self.app = app
+        self._translating = False
+        self._dt = None          # aktif DocumentTranslator ornegi
+        self._build()
+
+    # ── Arayuz Insasi ─────────────────────────────────────────────────────────
+
+    def _build(self):
+        _header(self, f"\U0001f4d6  {t('book_title')}",
+                t("book_subtitle"))
+
+        # Scroll alani
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
+        body.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ── 1. Dosya Secimi ────────────────────────────────────────────────
+        file_card = _card(body, t("select_file"))
+
+        file_row = ctk.CTkFrame(file_card, fg_color="transparent")
+        file_row.pack(fill="x")
+
+        self._file_entry = ctk.CTkEntry(
+            file_row,
+            placeholder_text=t("select_doc"),
+            font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            height=36, corner_radius=10
+        )
+        self._file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        ctk.CTkButton(
+            file_row, text=t("browse"), width=76, height=36,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            corner_radius=10, font=ctk.CTkFont(size=11),
+            command=self._browse
+        ).pack(side="left")
+
+        # ── 2. Ceviri Ayarlari ─────────────────────────────────────────────
+        opt_card = _card(body, t("settings"))
+        opt_card.columnconfigure(0, weight=1)
+        opt_card.columnconfigure(1, weight=1)
+        opt_card.columnconfigure(2, weight=1)
+
+        # Kaynak dil
+        ctk.CTkLabel(
+            opt_card, text=t("source_lang"),
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["muted"]
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
+
+        self._src_lang_combo = ctk.CTkComboBox(
+            opt_card, values=_LANG_NAMES, height=34,
+            fg_color=_C["surface2"], border_color=_C["border"],
+            font=ctk.CTkFont(size=11), corner_radius=10, state="readonly"
+        )
+        saved_src = self.cfg.get("language", "source_name", default="Turkish")
+        self._src_lang_combo.set(saved_src if saved_src in _LANG_NAMES else "Turkish")
+        self._src_lang_combo.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+        # Hedef dil
+        ctk.CTkLabel(
+            opt_card, text=t("target_lang"),
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["muted"]
+        ).grid(row=0, column=1, sticky="w", padx=(0, 8), pady=(0, 4))
+
+        self._tgt_lang_combo = ctk.CTkComboBox(
+            opt_card, values=_LANG_NAMES, height=34,
+            fg_color=_C["surface2"], border_color=_C["border"],
+            font=ctk.CTkFont(size=11), corner_radius=10, state="readonly"
+        )
+        saved_tgt = self.cfg.get("language", "target_name", default="English")
+        self._tgt_lang_combo.set(saved_tgt if saved_tgt in _LANG_NAMES else "English")
+        self._tgt_lang_combo.grid(row=1, column=1, sticky="ew", padx=(0, 8))
+
+        # Chunk boyutu
+        ctk.CTkLabel(
+            opt_card, text=t("chunk_size"),
+            font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["muted"]
+        ).grid(row=0, column=2, sticky="w", pady=(0, 4))
+
+        self._chunk_combo = ctk.CTkComboBox(
+            opt_card, values=["400 (Yerel GGUF)", "800 (API - Onerilen)", "1200 (API - Buyuk)"],
+            height=34, fg_color=_C["surface2"], border_color=_C["border"],
+            font=ctk.CTkFont(size=11), corner_radius=10, state="readonly"
+        )
+        self._chunk_combo.set("800 (API - Onerilen)")
+        self._chunk_combo.grid(row=1, column=2, sticky="ew")
+
+        # ── 3. Eylem Cubugu ───────────────────────────────────────────────
+        act_card = _card(body, t("translate"))
+        act_row = ctk.CTkFrame(act_card, fg_color="transparent")
+        act_row.pack(fill="x")
+
+        self._btn_start = ctk.CTkButton(
+            act_row, text=f"\u25b6  {t('start_translation')}",
+            height=36, corner_radius=10,
+            fg_color=_C["blue"], hover_color="#4080d0",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._start
+        )
+        self._btn_start.pack(side="left", padx=(0, 8))
+
+        self._btn_cancel = ctk.CTkButton(
+            act_row, text=f"\u25a0 {t('cancel')}",
+            height=36, width=80, corner_radius=10,
+            fg_color=_C["red_bg"], hover_color=_C["red"],
+            text_color=_C["red"],
+            state="disabled",
+            command=self._cancel
+        )
+        self._btn_cancel.pack(side="left", padx=(0, 8))
+
+        self._btn_save = ctk.CTkButton(
+            act_row, text=f"\U0001f4be {t('save_translation')}",
+            height=36, width=100, corner_radius=10,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            font=ctk.CTkFont(size=11),
+            state="disabled",
+            command=self._save
+        )
+        self._btn_save.pack(side="left")
+
+        # ── 4. Ilerleme ────────────────────────────────────────────────────
+        prog_card = _card(body, t("progress"))
+
+        self._progress = ctk.CTkProgressBar(
+            prog_card, height=8, mode="determinate",
+            progress_color=_C["blue"], fg_color=_C["surface2"]
+        )
+        self._progress.set(0)
+        self._progress.pack(fill="x", pady=(0, 6))
+
+        self._prog_lbl = ctk.CTkLabel(
+            prog_card, text=t("ready"),
+            font=ctk.CTkFont(size=10), text_color=_C["dim"], anchor="w"
+        )
+        self._prog_lbl.pack(anchor="w")
+
+        # ── 5. Cikti Metin Kutusu ──────────────────────────────────────────
+        out_card = _card(body, t("en_translation"))
+
+        self._out_box = ctk.CTkTextbox(
+            out_card,
+            font=ctk.CTkFont(size=12),
+            fg_color=_C["surface2"], border_color=_C["border"], border_width=1,
+            text_color=_C["text"], wrap="word", corner_radius=10,
+            height=340
+        )
+        self._out_box.pack(fill="both", expand=True)
+        self._out_box.configure(state="disabled")
+
+        ctk.CTkLabel(
+            out_card,
+            text="Ceviri tamamlaninca metin burada gorunur.",
+            font=ctk.CTkFont(size=9), text_color=_C["dim"]
+        ).pack(anchor="w", pady=(4, 0))
+
+    # ── Dosya Secimi ──────────────────────────────────────────────────────────
+
+    def _browse(self):
+        path = filedialog.askopenfilename(
+            title=t("browse"),
+            filetypes=[
+                ("Desteklenen belgeler", "*.txt *.pdf *.docx"),
+                ("Metin",   "*.txt"),
+                ("PDF",     "*.pdf"),
+                ("Word",    "*.docx"),
+                ("Hepsi",   "*.*"),
+            ]
+        )
+        if path:
+            self._file_entry.delete(0, "end")
+            self._file_entry.insert(0, path)
+            self._reset_output()
+
+    def _reset_output(self):
+        self._progress.set(0)
+        self._prog_lbl.configure(text=t("ready"), text_color=_C["dim"])
+        self._out_box.configure(state="normal")
+        self._out_box.delete("0.0", "end")
+        self._out_box.configure(state="disabled")
+        self._btn_save.configure(state="disabled")
+
+    # ── Baslat / Iptal ────────────────────────────────────────────────────────
+
+    def _start(self):
+        path = self._file_entry.get().strip()
+        if not path:
+            messagebox.showwarning(t("file_not_selected"), t("select_file_first"))
+            return
+        if not os.path.exists(path):
+            messagebox.showerror(t("file_not_found"), t("file_exists_error", path))
+            return
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in _DOC_EXT:
+            messagebox.showwarning(
+                t("unsupported_format"),
+                t("unsupported_ext", ext, "TXT, PDF, DOCX")
+            )
+            return
+        if not getattr(self.app, "_backend_ready", False):
+            messagebox.showwarning(t("backend_not_ready_models"),
+                                   t("models_still_loading"))
+            return
+
+        src_lang = self._src_lang_combo.get()
+        tgt_lang = self._tgt_lang_combo.get()
+        chunk_words = int(self._chunk_combo.get().split()[0])
+
+        self._translating = True
+        self._btn_start.configure(state="disabled")
+        self._btn_cancel.configure(state="normal")
+        self._btn_save.configure(state="disabled")
+        self._reset_output()
+
+        threading.Thread(
+            target=self._translation_pipeline,
+            args=(path, src_lang, tgt_lang, chunk_words),
+            daemon=True
+        ).start()
+
+    def _cancel(self):
+        if self._dt is not None:
+            self._dt.cancel()
+        self._translating = False
+        self._set_progress(0, "Iptal edildi.", _C["yellow"])
+        self._btn_start.configure(state="normal")
+        self._btn_cancel.configure(state="disabled")
+
+    # ── Pipeline ──────────────────────────────────────────────────────────────
+
+    def _translation_pipeline(self, file_path: str, src_lang: str,
+                               tgt_lang: str, chunk_words: int):
+        from pipeline.document_translator import DocumentTranslator
+
+        translator = self.app._orchestrator.translator
+
+        self._dt = DocumentTranslator(
+            translator=translator,
+            chunk_words=chunk_words,
+            overlap_paragraphs=3
+        )
+
+        def on_progress(frac, msg):
+            self._set_progress(frac, msg)
+            # Her chunk tamamlandikca ciktiye ekle (streaming hissi)
+
+        try:
+            result = self._dt.translate_file(
+                file_path=file_path,
+                src_lang=src_lang,
+                tgt_lang=tgt_lang,
+                output_path=None,          # GUI kaydetme dugmesini kullanir
+                progress_cb=on_progress
+            )
+
+            if self._translating:          # iptal edilmediyse
+                self._append_output(result)
+                self.after(0, lambda: self._btn_save.configure(state="normal"))
+
+        except Exception as e:
+            self._set_progress(0, f"Hata: {e}", _C["red"])
+        finally:
+            self._translating = False
+            self._dt = None
+            self.after(0, lambda: [
+                self._btn_start.configure(state="normal"),
+                self._btn_cancel.configure(state="disabled"),
+            ])
+
+    # ── Kaydet ────────────────────────────────────────────────────────────────
+
+    def _save(self):
+        text = self._out_box.get("0.0", "end").strip()
+        if not text:
+            messagebox.showinfo("Bos", "Kaydedilecek metin yok.")
+            return
+        src = self._file_entry.get().strip()
+        base = os.path.splitext(os.path.basename(src))[0] if src else "ceviri"
+        tgt = self._tgt_lang_combo.get().lower()[:2]
+        path = filedialog.asksaveasfilename(
+            title=t("save_translation"),
+            initialfile=f"{base}_{tgt}.txt",
+            initialdir=self.cfg.get("file_mode", "output_dir",
+                                    default=os.path.expanduser("~")),
+            defaultextension=".txt",
+            filetypes=[("Metin", "*.txt"), ("Hepsi", "*.*")]
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.cfg.set("file_mode", "output_dir", os.path.dirname(path))
+            self.cfg.save()
+            messagebox.showinfo("Kaydedildi", f"Dosya kaydedildi:\n{path}")
+
+    # ── Thread-safe yardimcilar ───────────────────────────────────────────────
+
+    def _set_progress(self, val: float, msg: str, color: str = None):
+        def _u():
+            self._progress.set(max(0.0, min(1.0, val)))
+            self._prog_lbl.configure(text=msg, text_color=color or _C["dim"])
+        self.after(0, _u)
+
+    def _append_output(self, text: str):
+        def _u():
+            self._out_box.configure(state="normal")
+            self._out_box.delete("0.0", "end")
+            self._out_box.insert("0.0", text)
+            self._out_box.configure(state="disabled")
+        self.after(0, _u)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Metin Ceviri View
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -905,14 +1236,14 @@ class TextView(ctk.CTkFrame):
         self._build()
 
     def _build(self):
-        _header(self, "\U0001f4dd  Metin Cevirisi",
-                "Turkce metin yazin ya da mikrofona konusun, aninda Ingilizce cevirisini alin")
+        _header(self, f"\U0001f4dd  {t('text_title')}",
+                t("text_subtitle"))
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
         # ── Giris ─────────────────────────────────────────────────────
-        in_card = _card(body, "Turkce Giris")
+        in_card = _card(body, t("source_text"))
         self._in = ctk.CTkTextbox(
             in_card, height=130,
             font=ctk.CTkFont(size=13),
@@ -926,7 +1257,7 @@ class TextView(ctk.CTkFrame):
         br.pack(fill="x", pady=(10, 0))
 
         self._btn_tr = ctk.CTkButton(
-            br, text="\u25b6  Cevir", height=38, width=110,
+            br, text=f"\u25b6  {t('translate')}", height=38, width=110,
             fg_color=_C["blue"], hover_color="#4080d0",
             corner_radius=10, font=ctk.CTkFont(size=12, weight="bold"),
             command=self._translate
@@ -934,14 +1265,14 @@ class TextView(ctk.CTkFrame):
         self._btn_tr.pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
-            br, text="Temizle", height=38, width=90,
+            br, text=t("clear"), height=38, width=90,
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=10, font=ctk.CTkFont(size=11),
             command=self._clear
         ).pack(side="left", padx=(0, 8))
 
         self._btn_mic = ctk.CTkButton(
-            br, text="\U0001f3a4  Dinle", height=38, width=110,
+            br, text=f"\U0001f3a4  {t('listening')}", height=38, width=110,
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=10, font=ctk.CTkFont(size=12),
             command=self._toggle_mic
@@ -956,7 +1287,7 @@ class TextView(ctk.CTkFrame):
         self._mic_lbl.pack(side="left", padx=(10, 0))
 
         # ── Cikis ─────────────────────────────────────────────────────
-        out_card = _card(body, "Ingilizce Ceviri")
+        out_card = _card(body, t("target_text"))
         self._out = ctk.CTkTextbox(
             out_card, height=130,
             font=ctk.CTkFont(size=13, weight="bold"),
@@ -968,7 +1299,7 @@ class TextView(ctk.CTkFrame):
 
         # Kopyala butonu
         ctk.CTkButton(
-            out_card, text="Kopyala", height=32, width=90,
+            out_card, text=t("copy"), height=32, width=90,
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=8, font=ctk.CTkFont(size=10),
             command=self._copy
@@ -990,9 +1321,9 @@ class TextView(ctk.CTkFrame):
         self._mic_recording  = True
         self._mic_stop_event = threading.Event()
         self._btn_mic.configure(
-            text="\u23f9  Durdur", fg_color=_C["red"], hover_color="#c03030"
+            text=f"\u23f9  {t('stop')}", fg_color=_C["red"], hover_color="#c03030"
         )
-        self._mic_lbl.configure(text="Kaydediliyor...", text_color=_C["red"])
+        self._mic_lbl.configure(text=t("recording"), text_color=_C["red"])
         threading.Thread(target=self._mic_capture, daemon=True).start()
 
     def _mic_capture(self):
@@ -1036,7 +1367,7 @@ class TextView(ctk.CTkFrame):
             hover_color=_C["yellow"], state="disabled"
         ))
         self.after(0, lambda: self._mic_lbl.configure(
-            text="STT isleniyor...", text_color=_C["yellow"]
+            text=t("processing"), text_color=_C["yellow"]
         ))
 
         try:
@@ -1052,7 +1383,7 @@ class TextView(ctk.CTkFrame):
                     )
                 else:
                     self._mic_lbl.configure(
-                        text="Ses tanınamadi", text_color=_C["red"]
+                        text=t("speech_not_recognized"), text_color=_C["red"]
                     )
             self.after(0, _insert)
         except Exception as e:
@@ -1068,7 +1399,7 @@ class TextView(ctk.CTkFrame):
 
             def _reset_btn():
                 self._btn_mic.configure(
-                    text="\U0001f3a4  Dinle",
+                    text=f"\U0001f3a4  {t('listening')}",
                     fg_color=_C["surface2"], hover_color=_C["border"],
                     state="normal"
                 )
@@ -1081,9 +1412,9 @@ class TextView(ctk.CTkFrame):
         if not text:
             return
         if not self.app._backend_ready:
-            messagebox.showinfo("Bekleyin", "Modeller henuz yukleniyor.")
+            messagebox.showinfo(t("backend_not_ready_models"), t("models_still_loading"))
             return
-        self._set_out("Cevriliyor...")
+        self._set_out(t("translating"))
         self._btn_tr.configure(state="disabled")
 
         def _run():
@@ -1119,6 +1450,49 @@ class TextView(ctk.CTkFrame):
 # Ayarlar View
 # ══════════════════════════════════════════════════════════════════════════════
 
+class _InfoIcon(ctk.CTkButton):
+    """Hover'da aciklama balonu gosteren [?] ikonu."""
+
+    def __init__(self, parent, tooltip_text: str, **kwargs):
+        super().__init__(
+            parent, text="?", width=18, height=18,
+            font=ctk.CTkFont(size=9, weight="bold"),
+            corner_radius=9,
+            fg_color=_C["surface2"], hover_color=_C["dim"],
+            text_color=_C["muted"], border_width=0,
+            **kwargs
+        )
+        self._tip_text = tooltip_text
+        self._tip_win = None
+        self.bind("<Enter>", self._show_tip)
+        self.bind("<Leave>", self._hide_tip)
+
+    def _show_tip(self, event=None):
+        if self._tip_win:
+            return
+        x = self.winfo_rootx() + 22
+        y = self.winfo_rooty()
+        self._tip_win = ctk.CTkToplevel(self)
+        self._tip_win.wm_overrideredirect(True)
+        self._tip_win.wm_geometry(f"+{x}+{y}")
+        self._tip_win.attributes("-topmost", True)
+        ctk.CTkLabel(
+            self._tip_win, text=self._tip_text,
+            font=ctk.CTkFont(size=10),
+            fg_color=_C["surface2"], text_color=_C["text"],
+            corner_radius=8, wraplength=260,
+            padx=10, pady=8
+        ).pack()
+
+    def _hide_tip(self, event=None):
+        if self._tip_win:
+            try:
+                self._tip_win.destroy()
+            except Exception:
+                pass
+            self._tip_win = None
+
+
 class SettingsView(ctk.CTkFrame):
     _MODES = [
         ("interactive",      "Interactive     \u2014  STT small \u00b7 LLM Cloud \u00b7 TTS GPU  (Hizli)"),
@@ -1130,6 +1504,7 @@ class SettingsView(ctk.CTkFrame):
         ("offline",          "Offline CPU     \u2014  Tumu yerel CPU"),
         ("hybrid_cloud_io",  "Hybrid I/O      \u2014  Bulut I/O \u00b7 Yerel LLM"),
         ("hybrid_cloud_stt", "Hybrid STT      \u2014  Bulut STT \u00b7 Yerel LLM/TTS"),
+        ("custom",           "Ozel Mod        \u2014  Asagidan bagimsiz secim"),
     ]
 
     def __init__(self, master, cfg: ConfigManager, app):
@@ -1139,14 +1514,26 @@ class SettingsView(ctk.CTkFrame):
         self._build()
 
     def _build(self):
-        _header(self, "\u2699  Ayarlar",
-                "Calisma modu, API anahtarlari ve gorunum tercihleri")
+        _header(self, f"\u2699  {t('settings_title')}",
+                t("settings_subtitle"))
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
         # ── Calisma Modu ──────────────────────────────────────────────
-        mode_card = _card(body, "Calisma Modu")
+        mode_card = _card(body, t("modes"))
+
+        mode_hdr = ctk.CTkFrame(mode_card, fg_color="transparent")
+        mode_hdr.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            mode_hdr, text="Hazir Profil:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(mode_hdr,
+                  "Hazir profiller STT/LLM/TTS bilesimlerini otomatik yapilandirir.\n"
+                  "'Ozel Mod' secenegiyle her bileseni ayri ayri belirleyebilirsiniz."
+                  ).pack(side="left", padx=(4, 0))
+
         mode_vals = [m[1] for m in self._MODES]
         cur       = self.cfg.get("mode", "current", default="online")
         cur_idx   = next(
@@ -1161,8 +1548,144 @@ class SettingsView(ctk.CTkFrame):
         self._mode_combo.set(mode_vals[cur_idx])
         self._mode_combo.pack(fill="x")
 
+        # ── Ozel Mod Secimi ───────────────────────────────────────────
+        custom_card = _card(body, t("settings"))
+
+        # STT satiri
+        stt_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        stt_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            stt_hdr, text=f"{t('stt_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(stt_hdr,
+                  "Konusmayi metne ceviren kulak.\n"
+                  "local_gpu  → Whisper GPU'da calisir, hizlidir.\n"
+                  "local_cpu  → VRAM kullanmaz, daha yavastir.\n"
+                  "cloud_auto → Groq/Deepgram (internet gerekir)."
+                  ).pack(side="left", padx=(4, 0))
+
+        stt_cur = self.cfg.get("mode", "stt", "backend", default="local_gpu")
+        self._stt_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["local_gpu", "local_cpu", "cloud_auto"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._stt_seg.set(stt_cur)
+        self._stt_seg.pack(fill="x", pady=(0, 8))
+
+        # LLM satiri
+        llm_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        llm_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            llm_hdr, text=f"{t('llm_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(llm_hdr,
+                  "Metni baska dile ceviren yapay zeka.\n"
+                  "online  → Bulut API'leri (internet gerekir): Gemma 4 / Gemini Flash / Groq.\n"
+                  "offline → Bilgisayarinda calisir, internet gerektirmez (gemma-q4.gguf)."
+                  ).pack(side="left", padx=(4, 0))
+
+        llm_cur = self.cfg.get("mode", "llm", "backend", default="online")
+        self._llm_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["online", "offline"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._llm_seg.set(llm_cur)
+        self._llm_seg.pack(fill="x", pady=(0, 8))
+
+        # TTS satiri
+        tts_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        tts_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            tts_hdr, text=f"{t('tts_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(tts_hdr,
+                  "Ceviriyi sesli okuyan sistem.\n"
+                  "online  → ElevenLabs (en dogal ses, internet gerekir).\n"
+                  "gpu     → XTTS-v2 ses klonlama GPU'da (VRAM gerekir).\n"
+                  "offline → XTTS-v2 CPU (yavastir, internet gerektirmez)."
+                  ).pack(side="left", padx=(4, 0))
+
+        tts_cur = self.cfg.get("mode", "tts", "backend", default="online")
+        self._tts_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["online", "gpu", "offline"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._tts_seg.set(tts_cur)
+        self._tts_seg.pack(fill="x", pady=(0, 8))
+
+        # Uygula butonu
+        ctk.CTkButton(
+            custom_card, text=t("apply"),
+            height=34, corner_radius=10,
+            fg_color=_C["blue"], hover_color="#4080d0",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._apply_custom_mode
+        ).pack(fill="x")
+
+        # ── Yayıncı / İçerik Üretici Modu ──────────────────────────────
+        broad_card = _card(body, t("nav_media"))
+        
+        broad_hdr = ctk.CTkFrame(broad_card, fg_color="transparent")
+        broad_hdr.pack(fill="x", pady=(0, 6))
+        
+        ctk.CTkLabel(
+            broad_hdr, text="Yayıncı Modu (Sanal Kablo):",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(broad_hdr,
+                  "Üretilen İngilizce sesi hoparlör yerine sanal bir mikrofona yönlendirir.\n"
+                  "Zoom, OBS veya Discord'da çeviri sesini kullanmak için 'CABLE Input' seçin."
+                  ).pack(side="left", padx=(4, 0))
+
+        # Toggle ve Dropdown satırı
+        broad_row = ctk.CTkFrame(broad_card, fg_color="transparent")
+        broad_row.pack(fill="x", pady=(4, 0))
+
+        self._broad_switch = ctk.CTkSwitch(
+            broad_row, text="Aktif",
+            command=self._on_broadcaster_toggle,
+            progress_color=_C["blue"]
+        )
+        if self.cfg.get("broadcaster", "enabled", default=False):
+            self._broad_switch.select()
+        self._broad_switch.pack(side="left", padx=(0, 20))
+
+        # Cihaz listesi
+        devices = self._get_output_devices()
+        device_names = [d[1] for d in devices]
+        
+        self._device_combo = ctk.CTkComboBox(
+            broad_row, values=device_names,
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            width=300,
+            command=self._on_device_select
+        )
+        
+        cur_dev_name = self.cfg.get("broadcaster", "output_device_name", default="Default")
+        self._device_combo.set(cur_dev_name)
+        self._device_combo.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(
+            broad_card, 
+            text="ℹ️ Sanal mikrofon için 'VB-Audio Virtual Cable' kurulu olmalıdır.",
+            font=ctk.CTkFont(size=9), text_color=_C["dim"]
+        ).pack(anchor="w", pady=(8, 0))
+
         # ── Donanim bilgisi ───────────────────────────────────────────
-        hw_card = _card(body, "Donanim")
+        hw_card = _card(body, t("hardware_profile"))
         hw      = self.cfg.get("hardware") or {}
         gpu_n   = hw.get("gpu", {}).get("name", "CPU")
         ram_gb  = hw.get("ram_gb", "?")
@@ -1174,7 +1697,7 @@ class SettingsView(ctk.CTkFrame):
         ).pack(anchor="w")
 
         # ── API Anahtarlari ───────────────────────────────────────────
-        api_card = _card(body, "API Anahtarlari")
+        api_card = _card(body, t("api_keys"))
         for svc, lbl, url in [
             ("gemini",     "Gemini",     "https://aistudio.google.com/apikey"),
             ("groq",       "Groq",       "https://console.groq.com/keys"),
@@ -1204,18 +1727,18 @@ class SettingsView(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
-            vr, text="Kaydet", width=72, height=34,
+            vr, text=t("save_settings"), width=72, height=34,
             fg_color=_C["blue"], corner_radius=10,
             command=self._save_voice
         ).pack(side="left")
 
         # ── Overlay Opakligi ──────────────────────────────────────────
-        ovl_card = _card(body, "Overlay Gorunumu")
+        ovl_card = _card(body, t("overlay_title"))
         op_row = ctk.CTkFrame(ovl_card, fg_color="transparent")
         op_row.pack(fill="x")
 
         ctk.CTkLabel(
-            op_row, text="Opaklik:",
+            op_row, text=f"{t('opacity')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
 
@@ -1238,7 +1761,7 @@ class SettingsView(ctk.CTkFrame):
         vad_row.pack(fill="x", pady=(10, 0))
 
         ctk.CTkLabel(
-            vad_row, text="VAD Hassasiyeti (0-3):",
+            vad_row, text=f"{t('vad_settings')} (0-3):",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
 
@@ -1252,6 +1775,59 @@ class SettingsView(ctk.CTkFrame):
         cur_vad = str(self.cfg.get("recording", "vad_aggressiveness", default=2))
         self._vad_seg.set(cur_vad)
         self._vad_seg.pack(side="left", padx=12)
+
+        # ── Çeviri Karakteri (Persona) ────────────────────────────────────────
+        persona_card = _card(body, "Ceviri Karakteri (Persona)")
+
+        persona_hdr = ctk.CTkFrame(persona_card, fg_color="transparent")
+        persona_hdr.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            persona_hdr, text="Ceviri Stili:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(persona_hdr,
+                  "LLM'e ceviriyi hangi uslupla yapacagini soyler.\n"
+                  "Resmi: Is toplantilari, akademik sunumlar.\n"
+                  "Yayinci: Twitch/YouTube — hedef dilin oyun argosuyla.\n"
+                  "Gunluk: Arkadas sohbeti, samimi dil.\n"
+                  "Edebi: Kitap cevirisi, betimleyici ve zarif."
+                  ).pack(side="left", padx=(4, 0))
+
+        _PERSONA_OPTIONS = [
+            ("none",     "Varsayilan (Persona Yok)"),
+            ("official", "Resmi / Diplomatik"),
+            ("streamer", "Yayinci / Streamer (Oyun Argosu)"),
+            ("casual",   "Gunluk / Samimi"),
+            ("literary", "Edebi / Kitap"),
+        ]
+        persona_vals = [p[1] for p in _PERSONA_OPTIONS]
+        cur_persona  = self.cfg.get("persona", default="none")
+        cur_persona_idx = next(
+            (i for i, p in enumerate(_PERSONA_OPTIONS) if p[0] == cur_persona), 0
+        )
+        self._persona_combo = ctk.CTkComboBox(
+            persona_card, values=persona_vals,
+            height=36, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=lambda display: self._on_persona(display, _PERSONA_OPTIONS)
+        )
+        self._persona_combo.set(persona_vals[cur_persona_idx])
+        self._persona_combo.pack(fill="x")
+
+        # ── UI Language Switcher ──────────────────────────────────────
+        lang_card = _card(body, t("ui_language_setting"))
+        lang_row = ctk.CTkFrame(lang_card, fg_color="transparent")
+        lang_row.pack(fill="x")
+
+        self._lang_seg = ctk.CTkSegmentedButton(
+            lang_row, values=["tr", "en"],
+            command=self._on_ui_lang,
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._lang_seg.set(self.cfg.get("language", "ui_language", default="tr"))
+        self._lang_seg.pack(fill="x")
 
     # ── Yardimci: API satiri ──────────────────────────────────────────────────
 
@@ -1281,7 +1857,7 @@ class SettingsView(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            row, text="Kaydet", width=72, height=32, corner_radius=8,
+            row, text=t("save_settings"), width=72, height=32, corner_radius=8,
             fg_color=_C["blue"],
             command=lambda s=svc, e=entry: self.cfg.set_api_key(s, e.get().strip())
         ).pack(side="left")
@@ -1305,7 +1881,77 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.set("recording", "vad_aggressiveness", int(val))
         self.cfg.save()
 
+    def _apply_custom_mode(self):
+        stt = self._stt_seg.get()
+        llm = self._llm_seg.get()
+        tts = self._tts_seg.get()
+
+        self.cfg.set("mode", "stt", "backend", stt)
+        self.cfg.set("mode", "llm", "backend", llm)
+        self.cfg.set("mode", "tts", "backend", tts)
+        self.cfg.save()
+
+        # Combo'yu "custom" olarak guncelle
+        custom_display = next(
+            (m[1] for m in self._MODES if m[0] == "custom"), None
+        )
+        if custom_display:
+            self._mode_combo.set(custom_display)
+
+        self.app.switch_mode("custom")
+
     def _save_voice(self):
         vid = self._voice_entry.get().strip()
         if vid:
             self.cfg.set_voice(vid)
+
+    def _get_output_devices(self):
+        """Sistemdeki ses çıkış cihazlarını listeler."""
+        import sounddevice as sd
+        try:
+            devices = sd.query_devices()
+            outputs = [(None, "Default")]
+            for i, d in enumerate(devices):
+                if d['max_output_channels'] > 0:
+                    outputs.append((i, d['name']))
+            return outputs
+        except Exception as e:
+            print(f"[HATA] Ses cihazlari listelenemedi: {e}")
+            return [(None, "Default")]
+
+    def _on_broadcaster_toggle(self):
+        enabled = self._broad_switch.get()
+        self.cfg.set("broadcaster", "enabled", bool(enabled))
+        self.cfg.save()
+
+        # Synthesizer'i guncelle (backend hazir degilse atla)
+        if not self.app._orchestrator:
+            return
+        if enabled:
+            self._on_device_select(self._device_combo.get())
+        else:
+            self.app._orchestrator.synthesizer.set_output_device(None)
+
+    def _on_device_select(self, name: str):
+        devices = self._get_output_devices()
+        idx = next((d[0] for d in devices if d[1] == name), None)
+
+        self.cfg.set("broadcaster", "output_device_index", idx)
+        self.cfg.set("broadcaster", "output_device_name", name)
+        self.cfg.save()
+
+        if self._broad_switch.get() and self.app._orchestrator:
+            self.app._orchestrator.synthesizer.set_output_device(idx)
+
+    def _on_persona(self, display: str, options: list):
+        key = next((p[0] for p in options if p[1] == display), "none")
+        self.cfg.set("persona", key)
+        self.cfg.save()
+        # Canlı güncelleme: orkestra hazırsa anında translator'a bildir
+        if self.app._orchestrator:
+            self.app._orchestrator.translator.set_persona(key)
+
+    def _on_ui_lang(self, lang: str):
+        self.cfg.set("language", "ui_language", lang)
+        self.cfg.save()
+        messagebox.showinfo(t("done_tick"), "Please restart the application to apply the language change.")

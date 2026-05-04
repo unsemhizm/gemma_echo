@@ -5,7 +5,65 @@ bu bilgilere gore en uygun calisma profilini onerير.
 """
 
 import platform
+import subprocess
 import sys
+from gui.i18n import t
+
+
+def _detect_system_gpu() -> tuple:
+    """
+    CUDA/MPS bulunamazsa AMD/Intel GPU'yu isletim sistemi araclariyla tespit eder.
+    Returns: (gpu_type, gpu_name, vram_gb)
+    gpu_type: "amd" | "intel" | "none"
+    """
+    system = platform.system().lower()
+
+    try:
+        if system == "windows":
+            result = subprocess.run(
+                ["wmic", "path", "win32_VideoController",
+                 "get", "Name,AdapterRAM"],
+                capture_output=True, text=True, timeout=8
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line or "AdapterRAM" in line:
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                # Ilk token RAM (bayt), gerisi kart adi
+                try:
+                    vram_bytes = int(parts[0])
+                    gpu_name = " ".join(parts[1:])
+                    vram_gb = round(vram_bytes / (1024 ** 3), 1)
+                except ValueError:
+                    gpu_name = line
+                    vram_gb = 0.0
+
+                name_lower = gpu_name.lower()
+                if "amd" in name_lower or "radeon" in name_lower or "rx " in name_lower:
+                    return "amd", gpu_name, vram_gb
+                if "intel" in name_lower and gpu_name:
+                    return "intel", gpu_name, 0.0
+
+        elif system in ("linux", "darwin"):
+            result = subprocess.run(
+                ["lspci"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines():
+                ll = line.lower()
+                if not ("vga" in ll or "display" in ll or "3d" in ll):
+                    continue
+                if "amd" in ll or "radeon" in ll or "advanced micro" in ll:
+                    return "amd", "AMD GPU", 0.0
+                if "intel" in ll:
+                    return "intel", "Intel GPU", 0.0
+
+    except Exception:
+        pass
+
+    return "none", "", 0.0
 
 
 def scan() -> dict:
@@ -70,6 +128,15 @@ def scan() -> dict:
     except ImportError:
         pass  # torch yoksa GPU yok sayilir
 
+    # ── CUDA/MPS bulunamazsa AMD/Intel taramasi ──────────────────
+    if not gpu["available"]:
+        sys_type, sys_name, sys_vram = _detect_system_gpu()
+        if sys_type in ("amd", "intel"):
+            gpu["available"] = True
+            gpu["type"] = sys_type
+            gpu["name"] = sys_name
+            gpu["vram_gb"] = sys_vram
+
     info["gpu"] = gpu
 
     # ── Onerilen Profil ─────────────────────────────────────────
@@ -114,7 +181,7 @@ def _recommend(info: dict) -> dict:
                 "llm_device": "cpu",
                 "tts_backend": "gpu",
                 "tts_device": "cuda",
-                "reason": f"NVIDIA GPU tespit edildi ({vram}GB VRAM). STT+TTS GPU'da, LLM bulutta calisacak (interactive mod).",
+                "reason": t("reason_nvidia_high", vram),
             })
         elif vram >= 3.0:
             # Sinirli VRAM: sadece STT GPU, TTS ve LLM online
@@ -126,13 +193,13 @@ def _recommend(info: dict) -> dict:
                 "llm_device": "cpu",
                 "tts_backend": "online",
                 "tts_device": "cpu",
-                "reason": f"NVIDIA GPU tespit edildi ({vram}GB VRAM). Sinirli VRAM: Sadece STT GPU'da, LLM+TTS bulutta (online_local_stt mod).",
+                "reason": t("reason_nvidia_med", vram),
             })
         else:
             # Dusuk VRAM: tum islemler bulut
             profile.update({
                 "orchestrator_mode": "online",
-                "reason": f"NVIDIA GPU var ancak VRAM yetersiz ({vram}GB). Tam bulut modu onerilir (online).",
+                "reason": t("reason_nvidia_low", vram),
             })
 
     # ── MPS (Apple Silicon) ──────────────────────────────────────
@@ -145,14 +212,43 @@ def _recommend(info: dict) -> dict:
             "llm_device": "cpu",
             "tts_backend": "online",
             "tts_device": "cpu",
-            "reason": "Apple Silicon tespit edildi. Whisper MPS'de (hizli), LLM+TTS bulutta calisacak.",
+            "reason": t("reason_mps"),
         })
+
+    # ── AMD / Intel (CUDA destegi yok) ───────────────────────────
+    elif gpu_type in ("amd", "intel"):
+        # torch-directml kuruluysa Whisper AMD/Intel uzerinde calisabilir
+        has_directml = False
+        try:
+            import torch_directml  # noqa: F401
+            has_directml = True
+        except ImportError:
+            pass
+
+        gpu_label = info["gpu"]["name"] or gpu_type.upper()
+
+        if has_directml:
+            profile.update({
+                "orchestrator_mode": "online_local_stt",
+                "stt_backend": "local_gpu",
+                "stt_device": "directml",
+                "llm_backend": "online",
+                "llm_device": "cpu",
+                "tts_backend": "online",
+                "tts_device": "cpu",
+                "reason": t("reason_directml", gpu_label),
+            })
+        else:
+            profile.update({
+                "orchestrator_mode": "online",
+                "reason": t("reason_no_cuda", gpu_label),
+            })
 
     # ── CPU Yalniz ───────────────────────────────────────────────
     else:
         profile.update({
             "orchestrator_mode": "online",
-            "reason": "Desteklenen GPU bulunamadi. Tum islemler bulut servisleri uzerinden yurutulecek.",
+            "reason": t("reason_no_gpu"),
         })
 
     return profile
@@ -168,7 +264,14 @@ def summary(info: dict) -> str:
     ]
     if gpu["available"]:
         vram_str = f" | {gpu['vram_gb']} GB VRAM" if gpu["vram_gb"] > 0 else ""
-        lines.append(f"  GPU             : {gpu['name']} ({gpu['type'].upper()}){vram_str}")
+        cuda_note = ""
+        if gpu["type"] in ("amd", "intel"):
+            try:
+                import torch_directml  # noqa: F401
+                cuda_note = " [DirectML]"
+            except ImportError:
+                cuda_note = " [CUDA destegi yok — online mod]"
+        lines.append(f"  GPU             : {gpu['name']} ({gpu['type'].upper()}){vram_str}{cuda_note}")
     else:
         lines.append("  GPU             : Yok (CPU modu)")
 

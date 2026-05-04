@@ -28,6 +28,7 @@ if _ROOT not in sys.path:
 
 from gui.config        import ConfigManager
 from gui.pages.overlay import Overlay
+from gui.i18n          import t, set_language
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -54,6 +55,10 @@ class GemmaEchoApp:
 
     def __init__(self):
         self.cfg             = ConfigManager()
+        # Dil ayarini baslat
+        ui_lang = self.cfg.get("language", "ui_language", default="tr")
+        set_language(ui_lang)
+        
         self._rq             = queue.Queue()   # orchestrator → overlay koprusu
         self._overlay: Overlay | None          = None
         self._main                             = None   # MainWindow
@@ -96,6 +101,9 @@ class GemmaEchoApp:
         )
         self._backend_thread.start()
 
+        # Overlay ayarlar butonunu ana pencereye bagla
+        self._overlay._open_settings = lambda: self._main.switch_view("settings")
+
         # Ana pencere mainloop'u baslatir
         self._main.mainloop()
 
@@ -107,82 +115,91 @@ class GemmaEchoApp:
         Tamamlaninca orchestrator'u result_queue'ya baglar.
         """
         try:
-            self._overlay.set_status("Modeller yukleniyor...", _C["yellow"])
+            self._overlay.set_status(t("loading_models"), _C["yellow"])
 
             from stt.transcriber       import Transcriber
             from llm.translator        import Translator
             from tts.synthesizer       import Synthesizer
             from pipeline.orchestrator import Orchestrator
 
-            transcriber = Transcriber()
+            self._transcriber = Transcriber()
+            transcriber = self._transcriber
             translator  = Translator()
             synthesizer = Synthesizer()
 
             mode = self.cfg.get("mode", "current", default="online")
             self._orchestrator = Orchestrator(
                 transcriber, translator, synthesizer,
-                initial_mode=mode
+                initial_mode=mode, config=self.cfg
             )
             self._orchestrator.result_queue = self._rq
             self._orchestrator.warm_up()
 
             self._backend_ready = True
-            self._overlay.set_status("Hazir · VAD dinliyor", _C["dim"])
+            self._overlay.set_status(t("ready_vad"), _C["dim"])
+            
+            # ─── BROADCASTER AYARLARI ───────────────────────────
+            if self.cfg.get("broadcaster", "enabled", default=False):
+                dev_idx = self.cfg.get("broadcaster", "output_device_index")
+                self._orchestrator.synthesizer.set_output_device(dev_idx)
             self._overlay.after(0, lambda: self._overlay._dot.configure(
                 text_color=_C["yellow"]
             ))
 
         except Exception as e:
-            self._overlay.set_status(f"Yukleme hatasi: {e}", _C["red"])
+            self._overlay.set_status(t("mode_error", str(e)), _C["red"])
 
     # ── Kayit Kontrolu ─────────────────────────────────────────────────────────
 
     def start_live(self):
         """VAD veya Bas-Konuş modunda kayıt başlatır."""
         if not self._backend_ready:
-            self._overlay.set_status("Backend henüz hazır değil...", _C["yellow"])
+            self._overlay.set_status(t("backend_not_ready"), _C["yellow"])
             return
         if self._recorder is not None:
             return   # zaten calisiyor
 
         from stt.recorder import Recorder
         aggressiveness = self.cfg.get("recording", "vad_aggressiveness", default=2)
-        self._recorder = Recorder(self._orchestrator, aggressiveness=aggressiveness)
+        self._recorder = Recorder(
+            self._orchestrator, 
+            aggressiveness=aggressiveness,
+            transcriber=self._transcriber,
+            config=self.cfg
+        )
 
         threading.Thread(target=self._recorder.run, daemon=True).start()
-        self._overlay.set_status("Canlı dinleme aktif", _C["green"])
+        self._overlay.set_status(t("live_active"), _C["green"])
+        
+        # ─── OVERLAY GORUNURLUK ───────────────────────────
+        self._overlay.deiconify()
+        self._overlay.lift()
 
     def stop_live(self):
         if self._recorder:
             self._recorder._stop_event.set()
             self._recorder = None
         if self._overlay:
-            self._overlay.set_status("Hazir · durdu", _C["dim"])
+            self._overlay.set_status(t("ready_stopped"), _C["dim"])
 
     def switch_mode(self, mode: str):
         if not self._orchestrator:
             return
         if getattr(self, "_mode_switching", False):
             return  # Zaten mod değiştiriliyor, tekrar tetiklenmesin
+        self._mode_switching = True
 
         def _do_switch():
-            self._mode_switching = True
-            status_msg = f"Mod yukleniyor: {mode.upper()}..."
-            if self._overlay:
-                self._overlay.set_status(status_msg, _C["yellow"])
-            if self._main:
-                self._main.after(0, lambda: self._main.set_status(status_msg, _C["yellow"]))
-
             try:
                 self._orchestrator.set_mode(mode)
                 self.cfg.set_mode(mode)
-                ok_msg = f"Mod: {mode.upper()}"
+                ok_msg = t("mode_active", mode.upper())
                 if self._overlay:
                     self._overlay.set_status(ok_msg, _C["blue"])
                 if self._main:
                     self._main.after(0, lambda: self._main.set_status(ok_msg, _C["blue"]))
             except Exception as e:
-                err_msg = f"Mod hatasi: {e}"
+                err_msg = t("mode_error", str(e))
                 if self._overlay:
                     self._overlay.set_status(err_msg, _C["red"])
                 if self._main:

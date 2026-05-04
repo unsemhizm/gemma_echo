@@ -147,6 +147,9 @@ class Synthesizer:
         self._project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.speaker_wav_path = os.path.join(self._project_dir, "audio", "Kayıt (3).wav")
 
+        # ─── CIKIS AYARLARI ─────────────────────────────────────
+        self.output_device = None  # None = Varsayılan, int = Cihaz indexi
+
     # ═══════════════════════════════════════════════════════════
     # BACKGROUND PRELOAD — XTTS PUSU MODU
     # ═══════════════════════════════════════════════════════════
@@ -213,6 +216,11 @@ class Synthesizer:
             return self.speak_offline(text, expect_gpu=True)
         return self.speak_offline(text, expect_gpu=False)
 
+    def set_output_device(self, device_index: int or None):
+        """None = varsayılan hoparlör, int = sounddevice cihaz indexi"""
+        self.output_device = device_index
+        print(f"[TTS] Çıkış cihazı ayarlandı: {device_index if device_index is not None else 'Varsayılan'}")
+
     # ═══════════════════════════════════════════════════════════
     # ONLINE SENTEZ — ElevenLabs
     # ═══════════════════════════════════════════════════════════
@@ -224,12 +232,18 @@ class Synthesizer:
 
         start_time = time.time()
         try:
+            # output_format="pcm_22050" — ElevenLabs ham PCM döner (MP3 değil).
+            # sf.read MP3'ü desteklemez; PCM ile doğrudan numpy parse edilir.
             audio = self.client.text_to_speech.convert(
                 text=text,
                 voice_id=self.voice_id,
-                model_id=self.model_id
+                model_id=self.model_id,
+                output_format="pcm_22050"
             )
-            play(audio)
+            audio_bytes = b"".join(audio)
+            data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            sd.play(data, samplerate=22050, device=self.output_device)
+            sd.wait()
             total_latency = int((time.time() - start_time) * 1000)
             print(f"[TTS] ElevenLabs Toplam Sure: {total_latency} ms")
             return total_latency
@@ -285,7 +299,7 @@ class Synthesizer:
             print(f"[TTS] XTTS-v2 ({device_str}) Uretim Suresi: {latency} ms | Caliniyor...")
 
             data, fs = sf.read(output_file)
-            sd.play(data, fs)
+            sd.play(data, fs, device=self.output_device)
             sd.wait()
             return latency
 

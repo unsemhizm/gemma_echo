@@ -9,6 +9,7 @@ from stt.transcriber import Transcriber
 from llm.translator import Translator
 from tts.synthesizer import Synthesizer
 from pipeline.orchestrator import Orchestrator
+from gui.config import ConfigManager
 
 
 def main():
@@ -42,7 +43,8 @@ def main():
     synthesizer = Synthesizer()
 
     # 2. Orkestrayi Kur (baslangic moduyla)
-    orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode)
+    cfg = ConfigManager()
+    orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode, config=cfg)
 
     # 3. Isit (Cold-Start Warm-up)
     orchestrator.warm_up()
@@ -50,7 +52,7 @@ def main():
     # 4. Islemi Baslat
     if args.live:
         from stt.recorder import Recorder
-        recorder = Recorder(orchestrator, aggressiveness=2)
+        recorder = Recorder(orchestrator, aggressiveness=2, transcriber=transcriber, config=cfg)
         recorder.run()
     else:
         print(f"\n[ISLEM] Hedef dosya: {args.input}")
