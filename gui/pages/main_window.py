@@ -472,11 +472,12 @@ class MediaView(ctk.CTkFrame):
         self.cfg = cfg
         self.app = app
         self._processing = False
+        self._dubbing    = False
         self._build()
 
     def _build(self):
         _header(self, "\U0001f3ac  Medya Cevirisi",
-                "Ses (.wav .mp3 .m4a) ve video (.mp4 .mkv .avi) dosyalarini cevir")
+                "Transkript/ceviri icin  \u25b6 Cevir  |  Ingilizce dublaj icin  \U0001f3ac Dublaj")
 
         # ── Dosya secim cubugu ─────────────────────────────────────────
         bar = ctk.CTkFrame(
@@ -518,7 +519,16 @@ class MediaView(ctk.CTkFrame):
             text_color=_C["red"], corner_radius=10,
             state="disabled", command=self._cancel
         )
-        self._btn_cancel.pack(side="left")
+        self._btn_cancel.pack(side="left", padx=(0, 6))
+
+        self._btn_dub = ctk.CTkButton(
+            bar_in, text="\U0001f3ac  Dublaj", width=90, height=36,
+            fg_color="#2a1a4a", hover_color="#4a2a7a",
+            text_color="#c084fc", corner_radius=10,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._start_dubbing
+        )
+        self._btn_dub.pack(side="left")
 
         # ── Ilerleme ──────────────────────────────────────────────────
         prog_frame = ctk.CTkFrame(self, fg_color="transparent", height=32)
@@ -664,6 +674,67 @@ class MediaView(ctk.CTkFrame):
         self._set_progress(0, "Iptal edildi", _C["yellow"])
         self._btn_process.configure(state="normal")
         self._btn_cancel.configure(state="disabled")
+
+    # ── Dublaj ────────────────────────────────────────────────────────────────
+
+    def _start_dubbing(self):
+        if self._dubbing or self._processing:
+            return
+        path = self._file_entry.get().strip()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Dosya Yok", "Lutfen once bir video dosyasi secin.")
+            return
+        if os.path.splitext(path)[1].lower() not in _VIDEO_EXT | _AUDIO_EXT:
+            messagebox.showwarning("Desteklenmiyor", "Desteklenen format: mp4, mkv, avi, mov ...")
+            return
+        if not self.app._backend_ready:
+            messagebox.showinfo(
+                "Modeller Hazirlaniyor",
+                "STT/LLM/TTS modelleri henuz yukleniyor.\nBir dakika bekleyip tekrar deneyin."
+            )
+            return
+
+        # Cikti yolu: kaynak_video_dubbed.mp4
+        base, _ = os.path.splitext(path)
+        output_path = base + "_dubbed.mp4"
+
+        self._dubbing = True
+        self._btn_dub.configure(state="disabled", fg_color=_C["dim"])
+        self._btn_process.configure(state="disabled")
+        self._clear()
+        threading.Thread(
+            target=self._dubbing_pipeline, args=(path, output_path), daemon=True
+        ).start()
+
+    def _dubbing_pipeline(self, src: str, output_path: str):
+        from pipeline.dubber import DubbingPipeline
+
+        orch = self.app._orchestrator
+        dubber = DubbingPipeline(
+            transcriber=orch.transcriber,
+            translator=orch.translator,
+            synthesizer=orch.synthesizer,
+        )
+
+        def on_progress(fraction, msg, color):
+            self._set_progress(fraction, msg, color)
+
+        try:
+            dubber.process(src, output_path, progress_cb=on_progress)
+            self.after(0, lambda: self._elapsed.configure(
+                text=f"Cikti: {os.path.basename(output_path)}",
+                text_color=_C["green"]
+            ))
+        except Exception as e:
+            self._set_progress(0, f"Dublaj hatasi: {e}", _C["red"])
+        finally:
+            self._dubbing = False
+            self.after(0, lambda: [
+                self._btn_dub.configure(
+                    state="normal", fg_color="#2a1a4a"
+                ),
+                self._btn_process.configure(state="normal"),
+            ])
 
     def _pipeline(self, src: str):
         t0 = time.time()
@@ -829,11 +900,13 @@ class TextView(ctk.CTkFrame):
         super().__init__(master, fg_color=_C["bg"], corner_radius=0)
         self.cfg = cfg
         self.app = app
+        self._mic_recording  = False
+        self._mic_stop_event = None
         self._build()
 
     def _build(self):
         _header(self, "\U0001f4dd  Metin Cevirisi",
-                "Turkce metin yazin, aninda Ingilizce cevirisini alin")
+                "Turkce metin yazin ya da mikrofona konusun, aninda Ingilizce cevirisini alin")
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
@@ -865,7 +938,22 @@ class TextView(ctk.CTkFrame):
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=10, font=ctk.CTkFont(size=11),
             command=self._clear
-        ).pack(side="left")
+        ).pack(side="left", padx=(0, 8))
+
+        self._btn_mic = ctk.CTkButton(
+            br, text="\U0001f3a4  Dinle", height=38, width=110,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            corner_radius=10, font=ctk.CTkFont(size=12),
+            command=self._toggle_mic
+        )
+        self._btn_mic.pack(side="left")
+
+        self._mic_lbl = ctk.CTkLabel(
+            br, text="",
+            font=ctk.CTkFont(size=10),
+            text_color=_C["muted"]
+        )
+        self._mic_lbl.pack(side="left", padx=(10, 0))
 
         # ── Cikis ─────────────────────────────────────────────────────
         out_card = _card(body, "Ingilizce Ceviri")
@@ -885,6 +973,108 @@ class TextView(ctk.CTkFrame):
             corner_radius=8, font=ctk.CTkFont(size=10),
             command=self._copy
         ).pack(anchor="e", pady=(8, 0))
+
+    # ── Mikrofon ──────────────────────────────────────────────────────────────
+
+    def _toggle_mic(self):
+        if self._mic_recording:
+            if self._mic_stop_event:
+                self._mic_stop_event.set()
+        else:
+            self._start_mic()
+
+    def _start_mic(self):
+        if not self.app._backend_ready:
+            messagebox.showinfo("Bekleyin", "Modeller henuz yukleniyor.")
+            return
+        self._mic_recording  = True
+        self._mic_stop_event = threading.Event()
+        self._btn_mic.configure(
+            text="\u23f9  Durdur", fg_color=_C["red"], hover_color="#c03030"
+        )
+        self._mic_lbl.configure(text="Kaydediliyor...", text_color=_C["red"])
+        threading.Thread(target=self._mic_capture, daemon=True).start()
+
+    def _mic_capture(self):
+        import sounddevice as sd
+        import wave, tempfile, numpy as np
+
+        SAMPLE_RATE = 16000
+        frames      = []
+
+        def _cb(indata, frame_count, time_info, status):
+            frames.append(bytes(indata))
+
+        with sd.RawInputStream(
+            samplerate=SAMPLE_RATE, channels=1, dtype="int16", callback=_cb
+        ):
+            self._mic_stop_event.wait()   # Durdur butonuna basilana kadar bekle
+
+        # WAV yaz (RMS normalizasyon)
+        audio_bytes = b"".join(frames)
+        if audio_bytes:
+            import numpy as _np
+            samples = _np.frombuffer(audio_bytes, dtype=_np.int16).astype(_np.float32)
+            rms = _np.sqrt(_np.mean(samples ** 2))
+            if rms > 50:
+                gain = min(3000.0 / rms, 10.0)
+                samples = _np.clip(samples * gain, -32767, 32767)
+            audio_bytes = samples.astype(_np.int16).tobytes()
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
+        wav_path = tmp.name
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(audio_bytes)
+
+        # Tanıma aşaması
+        self.after(0, lambda: self._btn_mic.configure(
+            text="\U0001f504  Taniniyor...", fg_color=_C["yellow"],
+            hover_color=_C["yellow"], state="disabled"
+        ))
+        self.after(0, lambda: self._mic_lbl.configure(
+            text="STT isleniyor...", text_color=_C["yellow"]
+        ))
+
+        try:
+            result = self.app._orchestrator.transcriber.transcribe(wav_path)
+            text   = result.get("text", "").strip()
+
+            def _insert():
+                if text:
+                    self._in.delete("0.0", "end")
+                    self._in.insert("0.0", text)
+                    self._mic_lbl.configure(
+                        text=f"{len(text.split())} kelime tanindi", text_color=_C["green"]
+                    )
+                else:
+                    self._mic_lbl.configure(
+                        text="Ses tanınamadi", text_color=_C["red"]
+                    )
+            self.after(0, _insert)
+        except Exception as e:
+            self.after(0, lambda: self._mic_lbl.configure(
+                text=f"Hata: {e}", text_color=_C["red"]
+            ))
+        finally:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            self._mic_recording = False
+
+            def _reset_btn():
+                self._btn_mic.configure(
+                    text="\U0001f3a4  Dinle",
+                    fg_color=_C["surface2"], hover_color=_C["border"],
+                    state="normal"
+                )
+            self.after(0, _reset_btn)
+
+    # ── Ceviri ───────────────────────────────────────────────────────────────
 
     def _translate(self):
         text = self._in.get("0.0", "end").strip()

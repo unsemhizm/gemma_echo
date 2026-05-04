@@ -160,15 +160,37 @@ class GemmaEchoApp:
             self._overlay.set_status("Hazir · durdu", _C["dim"])
 
     def switch_mode(self, mode: str):
-        if self._orchestrator:
+        if not self._orchestrator:
+            return
+        if getattr(self, "_mode_switching", False):
+            return  # Zaten mod değiştiriliyor, tekrar tetiklenmesin
+
+        def _do_switch():
+            self._mode_switching = True
+            status_msg = f"Mod yukleniyor: {mode.upper()}..."
+            if self._overlay:
+                self._overlay.set_status(status_msg, _C["yellow"])
+            if self._main:
+                self._main.after(0, lambda: self._main.set_status(status_msg, _C["yellow"]))
+
             try:
                 self._orchestrator.set_mode(mode)
                 self.cfg.set_mode(mode)
+                ok_msg = f"Mod: {mode.upper()}"
                 if self._overlay:
-                    self._overlay.set_status(f"Mod: {mode.upper()}", _C["blue"])
+                    self._overlay.set_status(ok_msg, _C["blue"])
+                if self._main:
+                    self._main.after(0, lambda: self._main.set_status(ok_msg, _C["blue"]))
             except Exception as e:
+                err_msg = f"Mod hatasi: {e}"
                 if self._overlay:
-                    self._overlay.set_status(f"Mod hatasi: {e}", _C["red"])
+                    self._overlay.set_status(err_msg, _C["red"])
+                if self._main:
+                    self._main.after(0, lambda: self._main.set_status(err_msg, _C["red"]))
+            finally:
+                self._mode_switching = False
+
+        threading.Thread(target=_do_switch, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

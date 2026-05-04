@@ -291,13 +291,12 @@ class Overlay(ctk.CTkToplevel):
         self._status_label.configure(text="Hata yakalandı", text_color=_C["red"])
 
     def _fade_to_idle(self):
-        """Bir sure sonra göstergeyi bekleme rengine döndür + click-through aç."""
+        """Bir sure sonra göstergeyi bekleme rengine döndür."""
         self._dot.configure(text_color=_C["yellow"])
         self._status_label.configure(
             text="Hazır · VAD dinliyor", text_color=_C["dim"]
         )
         self._engine_label.configure(text="")
-        self._set_clickthrough(True)   # boşta: fare tıklamalarını geçir
 
     def _set_clickthrough(self, enable: bool):
         """
@@ -347,7 +346,7 @@ class Overlay(ctk.CTkToplevel):
         self.cfg.set("overlay", "position_x", self.winfo_x())
         self.cfg.set("overlay", "position_y", self.winfo_y())
         self.cfg.save()
-        self.destroy()
+        self.withdraw()   # destroy degil — poll dongusu yasamaya devam eder
 
     def _open_settings(self):
         """Ayarlar paneli acilacak (app.py tarafindan override edilir)."""
