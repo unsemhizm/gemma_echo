@@ -16,7 +16,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from gui.config import ConfigManager
-from gui.i18n   import t
+from gui.i18n   import t, get_language
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -990,12 +990,19 @@ class BookView(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"), text_color=_C["muted"]
         ).grid(row=0, column=2, sticky="w", pady=(0, 4))
 
+        if get_language() == "tr":
+            chunk_vals = ["400 (Yerel GGUF)", "800 (API - Önerilen)", "1200 (API - Büyük)"]
+            chunk_def  = "800 (API - Önerilen)"
+        else:
+            chunk_vals = ["400 (Local GGUF)", "800 (API - Recommended)", "1200 (API - Large)"]
+            chunk_def  = "800 (API - Recommended)"
+
         self._chunk_combo = ctk.CTkComboBox(
-            opt_card, values=["400 (Yerel GGUF)", "800 (API - Onerilen)", "1200 (API - Buyuk)"],
+            opt_card, values=chunk_vals,
             height=34, fg_color=_C["surface2"], border_color=_C["border"],
             font=ctk.CTkFont(size=11), corner_radius=10, state="readonly"
         )
-        self._chunk_combo.set("800 (API - Onerilen)")
+        self._chunk_combo.set(chunk_def)
         self._chunk_combo.grid(row=1, column=2, sticky="ew")
 
         # ── 3. Eylem Cubugu ───────────────────────────────────────────────
@@ -1453,6 +1460,8 @@ class TextView(ctk.CTkFrame):
 class _InfoIcon(ctk.CTkButton):
     """Hover'da aciklama balonu gosteren [?] ikonu."""
 
+    _active = None  # Tum ornekler arasinda tek aktif tooltip
+
     def __init__(self, parent, tooltip_text: str, **kwargs):
         super().__init__(
             parent, text="?", width=18, height=18,
@@ -1464,10 +1473,31 @@ class _InfoIcon(ctk.CTkButton):
         )
         self._tip_text = tooltip_text
         self._tip_win = None
-        self.bind("<Enter>", self._show_tip)
-        self.bind("<Leave>", self._hide_tip)
+        self._show_after_id = None
+        self._focus_bind_id = None
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_leave)
 
-    def _show_tip(self, event=None):
+    def _on_enter(self, event=None):
+        # Bekleyen gosterimi iptal et
+        if self._show_after_id:
+            self.after_cancel(self._show_after_id)
+        # Baska bir InfoIcon'un acik tooltip'ini kapat
+        if _InfoIcon._active and _InfoIcon._active is not self:
+            _InfoIcon._active._do_hide()
+        # Kisa gecikmeyle goster (hizli gecislerde gereksiz acilmasin)
+        self._show_after_id = self.after(150, self._do_show)
+
+    def _on_leave(self, event=None):
+        # Bekleyen gosterimi iptal et
+        if self._show_after_id:
+            self.after_cancel(self._show_after_id)
+            self._show_after_id = None
+        self._do_hide()
+
+    def _do_show(self):
+        self._show_after_id = None
         if self._tip_win:
             return
         x = self.winfo_rootx() + 22
@@ -1475,7 +1505,6 @@ class _InfoIcon(ctk.CTkButton):
         self._tip_win = ctk.CTkToplevel(self)
         self._tip_win.wm_overrideredirect(True)
         self._tip_win.wm_geometry(f"+{x}+{y}")
-        self._tip_win.attributes("-topmost", True)
         ctk.CTkLabel(
             self._tip_win, text=self._tip_text,
             font=ctk.CTkFont(size=10),
@@ -1483,28 +1512,44 @@ class _InfoIcon(ctk.CTkButton):
             corner_radius=8, wraplength=260,
             padx=10, pady=8
         ).pack()
+        _InfoIcon._active = self
+        # Ana pencere odagi kaybedince tooltip'i kapat
+        try:
+            root = self.winfo_toplevel()
+            self._focus_bind_id = root.bind("<FocusOut>", self._on_leave, add="+")
+        except Exception:
+            pass
 
-    def _hide_tip(self, event=None):
+    def _do_hide(self):
+        # FocusOut binding'ini temizle
+        try:
+            if self._focus_bind_id:
+                self.winfo_toplevel().unbind("<FocusOut>", self._focus_bind_id)
+                self._focus_bind_id = None
+        except Exception:
+            pass
         if self._tip_win:
             try:
                 self._tip_win.destroy()
             except Exception:
                 pass
             self._tip_win = None
+        if _InfoIcon._active is self:
+            _InfoIcon._active = None
 
 
 class SettingsView(ctk.CTkFrame):
     _MODES = [
-        ("interactive",      "Interactive     \u2014  STT small \u00b7 LLM Cloud \u00b7 TTS GPU  (Hizli)"),
-        ("interactive_hq",   "Interactive HQ  \u2014  STT medium \u00b7 LLM Cloud \u00b7 TTS GPU  (Kaliteli)"),
-        ("online",           "Online          \u2014  Tumu bulut"),
-        ("online_xtts",      "Online XTTS     \u2014  Bulut + Yerel TTS"),
-        ("online_local_stt", "Local STT       \u2014  STT small \u00b7 LLM+TTS bulut"),
-        ("offline_gpu",      "Offline GPU     \u2014  Tumu yerel GPU"),
-        ("offline",          "Offline CPU     \u2014  Tumu yerel CPU"),
-        ("hybrid_cloud_io",  "Hybrid I/O      \u2014  Bulut I/O \u00b7 Yerel LLM"),
-        ("hybrid_cloud_stt", "Hybrid STT      \u2014  Bulut STT \u00b7 Yerel LLM/TTS"),
-        ("custom",           "Ozel Mod        \u2014  Asagidan bagimsiz secim"),
+        ("interactive",      "mode_interactive"),
+        ("interactive_hq",   "mode_interactive_hq"),
+        ("online",           "mode_online"),
+        ("online_xtts",      "mode_online_xtts"),
+        ("online_local_stt", "mode_online_local_stt"),
+        ("offline_gpu",      "mode_offline_gpu"),
+        ("offline",          "mode_offline"),
+        ("hybrid_cloud_io",  "mode_hybrid_io"),
+        ("hybrid_cloud_stt", "mode_hybrid_stt"),
+        ("custom",           "mode_custom"),
     ]
 
     def __init__(self, master, cfg: ConfigManager, app):
@@ -1526,15 +1571,12 @@ class SettingsView(ctk.CTkFrame):
         mode_hdr = ctk.CTkFrame(mode_card, fg_color="transparent")
         mode_hdr.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
-            mode_hdr, text="Hazir Profil:",
+            mode_hdr, text=f"{t('preset_profile')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
-        _InfoIcon(mode_hdr,
-                  "Hazir profiller STT/LLM/TTS bilesimlerini otomatik yapilandirir.\n"
-                  "'Ozel Mod' secenegiyle her bileseni ayri ayri belirleyebilirsiniz."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(mode_hdr, t("tip_preset_profile")).pack(side="left", padx=(4, 0))
 
-        mode_vals = [m[1] for m in self._MODES]
+        mode_vals = [t(m[1]) for m in self._MODES]
         cur       = self.cfg.get("mode", "current", default="online")
         cur_idx   = next(
             (i for i, m in enumerate(self._MODES) if m[0] == cur), 0
@@ -1558,12 +1600,7 @@ class SettingsView(ctk.CTkFrame):
             stt_hdr, text=f"{t('stt_settings')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
         ).pack(side="left")
-        _InfoIcon(stt_hdr,
-                  "Konusmayi metne ceviren kulak.\n"
-                  "local_gpu  → Whisper GPU'da calisir, hizlidir.\n"
-                  "local_cpu  → VRAM kullanmaz, daha yavastir.\n"
-                  "cloud_auto → Groq/Deepgram (internet gerekir)."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(stt_hdr, t("tip_stt")).pack(side="left", padx=(4, 0))
 
         stt_cur = self.cfg.get("mode", "stt", "backend", default="local_gpu")
         self._stt_seg = ctk.CTkSegmentedButton(
@@ -1583,11 +1620,7 @@ class SettingsView(ctk.CTkFrame):
             llm_hdr, text=f"{t('llm_settings')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
         ).pack(side="left")
-        _InfoIcon(llm_hdr,
-                  "Metni baska dile ceviren yapay zeka.\n"
-                  "online  → Bulut API'leri (internet gerekir): Gemma 4 / Gemini Flash / Groq.\n"
-                  "offline → Bilgisayarinda calisir, internet gerektirmez (gemma-q4.gguf)."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(llm_hdr, t("tip_llm")).pack(side="left", padx=(4, 0))
 
         llm_cur = self.cfg.get("mode", "llm", "backend", default="online")
         self._llm_seg = ctk.CTkSegmentedButton(
@@ -1607,12 +1640,7 @@ class SettingsView(ctk.CTkFrame):
             tts_hdr, text=f"{t('tts_settings')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
         ).pack(side="left")
-        _InfoIcon(tts_hdr,
-                  "Ceviriyi sesli okuyan sistem.\n"
-                  "online  → ElevenLabs (en dogal ses, internet gerekir).\n"
-                  "gpu     → XTTS-v2 ses klonlama GPU'da (VRAM gerekir).\n"
-                  "offline → XTTS-v2 CPU (yavastir, internet gerektirmez)."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(tts_hdr, t("tip_tts")).pack(side="left", padx=(4, 0))
 
         tts_cur = self.cfg.get("mode", "tts", "backend", default="online")
         self._tts_seg = ctk.CTkSegmentedButton(
@@ -1641,20 +1669,17 @@ class SettingsView(ctk.CTkFrame):
         broad_hdr.pack(fill="x", pady=(0, 6))
         
         ctk.CTkLabel(
-            broad_hdr, text="Yayıncı Modu (Sanal Kablo):",
+            broad_hdr, text=f"{t('broadcaster_mode')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
-        _InfoIcon(broad_hdr,
-                  "Üretilen İngilizce sesi hoparlör yerine sanal bir mikrofona yönlendirir.\n"
-                  "Zoom, OBS veya Discord'da çeviri sesini kullanmak için 'CABLE Input' seçin."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(broad_hdr, t("tip_broadcaster")).pack(side="left", padx=(4, 0))
 
         # Toggle ve Dropdown satırı
         broad_row = ctk.CTkFrame(broad_card, fg_color="transparent")
         broad_row.pack(fill="x", pady=(4, 0))
 
         self._broad_switch = ctk.CTkSwitch(
-            broad_row, text="Aktif",
+            broad_row, text=t("active"),
             command=self._on_broadcaster_toggle,
             progress_color=_C["blue"]
         )
@@ -1679,8 +1704,8 @@ class SettingsView(ctk.CTkFrame):
         self._device_combo.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
-            broad_card, 
-            text="ℹ️ Sanal mikrofon için 'VB-Audio Virtual Cable' kurulu olmalıdır.",
+            broad_card,
+            text=t("broadcaster_hint"),
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).pack(anchor="w", pady=(8, 0))
 
@@ -1706,7 +1731,7 @@ class SettingsView(ctk.CTkFrame):
             self._api_row(api_card, svc, lbl, url)
 
         # ── ElevenLabs Ses ────────────────────────────────────────────
-        voice_card = _card(body, "ElevenLabs Ses ID")
+        voice_card = _card(body, t("elevenlabs_voice_id_label"))
         vr = ctk.CTkFrame(voice_card, fg_color="transparent")
         vr.pack(fill="x")
 
@@ -1721,7 +1746,7 @@ class SettingsView(ctk.CTkFrame):
         self._voice_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         ctk.CTkButton(
-            vr, text="Ses Kutuphanesi \u2192", width=130, height=34,
+            vr, text=t("voice_library"), width=130, height=34,
             fg_color=_C["surface2"], corner_radius=10,
             command=lambda: webbrowser.open("https://elevenlabs.io/app/voice-library")
         ).pack(side="left", padx=(0, 6))
@@ -1777,30 +1802,24 @@ class SettingsView(ctk.CTkFrame):
         self._vad_seg.pack(side="left", padx=12)
 
         # ── Çeviri Karakteri (Persona) ────────────────────────────────────────
-        persona_card = _card(body, "Ceviri Karakteri (Persona)")
+        persona_card = _card(body, t("persona_title"))
 
         persona_hdr = ctk.CTkFrame(persona_card, fg_color="transparent")
         persona_hdr.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
-            persona_hdr, text="Ceviri Stili:",
+            persona_hdr, text=f"{t('persona_style')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
-        _InfoIcon(persona_hdr,
-                  "LLM'e ceviriyi hangi uslupla yapacagini soyler.\n"
-                  "Resmi: Is toplantilari, akademik sunumlar.\n"
-                  "Yayinci: Twitch/YouTube — hedef dilin oyun argosuyla.\n"
-                  "Gunluk: Arkadas sohbeti, samimi dil.\n"
-                  "Edebi: Kitap cevirisi, betimleyici ve zarif."
-                  ).pack(side="left", padx=(4, 0))
+        _InfoIcon(persona_hdr, t("tip_persona")).pack(side="left", padx=(4, 0))
 
         _PERSONA_OPTIONS = [
-            ("none",     "Varsayilan (Persona Yok)"),
-            ("official", "Resmi / Diplomatik"),
-            ("streamer", "Yayinci / Streamer (Oyun Argosu)"),
-            ("casual",   "Gunluk / Samimi"),
-            ("literary", "Edebi / Kitap"),
+            ("none",     "persona_none"),
+            ("official", "persona_official"),
+            ("streamer", "persona_streamer"),
+            ("casual",   "persona_casual"),
+            ("literary", "persona_literary"),
         ]
-        persona_vals = [p[1] for p in _PERSONA_OPTIONS]
+        persona_vals = [t(p[1]) for p in _PERSONA_OPTIONS]
         cur_persona  = self.cfg.get("persona", default="none")
         cur_persona_idx = next(
             (i for i, p in enumerate(_PERSONA_OPTIONS) if p[0] == cur_persona), 0
@@ -1865,7 +1884,7 @@ class SettingsView(ctk.CTkFrame):
     # ── Olaylar ───────────────────────────────────────────────────────────────
 
     def _on_mode(self, display: str):
-        key = next((m[0] for m in self._MODES if m[1] == display), None)
+        key = next((m[0] for m in self._MODES if t(m[1]) == display), None)
         if key:
             self.app.switch_mode(key)
 
@@ -1893,7 +1912,7 @@ class SettingsView(ctk.CTkFrame):
 
         # Combo'yu "custom" olarak guncelle
         custom_display = next(
-            (m[1] for m in self._MODES if m[0] == "custom"), None
+            (t(m[1]) for m in self._MODES if m[0] == "custom"), None
         )
         if custom_display:
             self._mode_combo.set(custom_display)
@@ -1944,7 +1963,7 @@ class SettingsView(ctk.CTkFrame):
             self.app._orchestrator.synthesizer.set_output_device(idx)
 
     def _on_persona(self, display: str, options: list):
-        key = next((p[0] for p in options if p[1] == display), "none")
+        key = next((p[0] for p in options if t(p[1]) == display), "none")
         self.cfg.set("persona", key)
         self.cfg.save()
         # Canlı güncelleme: orkestra hazırsa anında translator'a bildir
@@ -1952,6 +1971,17 @@ class SettingsView(ctk.CTkFrame):
             self.app._orchestrator.translator.set_persona(key)
 
     def _on_ui_lang(self, lang: str):
+        from gui.i18n import set_language
+        set_language(lang)
+
         self.cfg.set("language", "ui_language", lang)
         self.cfg.save()
-        messagebox.showinfo(t("done_tick"), "Please restart the application to apply the language change.")
+
+        # Rebuild MainWindow dynamically
+        main_win = self.app._main
+        if main_win:
+            for child in main_win.winfo_children():
+                child.destroy()
+            main_win.title(t("app_name"))
+            main_win._build()
+            main_win.switch_view("settings")

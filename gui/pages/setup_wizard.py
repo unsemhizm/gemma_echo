@@ -11,7 +11,7 @@ import webbrowser
 import customtkinter as ctk
 
 from gui.config import ConfigManager
-from gui.i18n   import t
+from gui.i18n   import t, get_language, set_language
 from gui.hardware_scan import scan as hw_scan
 
 # ─── Tema ─────────────────────────────────────────────────────────────────────
@@ -98,6 +98,17 @@ class SetupWizard(ctk.CTk):
             font=ctk.CTkFont(size=13),
             text_color="#aabbcc"
         ).pack(side="left", padx=0, pady=20)
+
+        # Dil Secici Segmented Button
+        self._lang_seg = ctk.CTkSegmentedButton(
+            hdr, values=["TR", "EN"],
+            width=80, height=28,
+            selected_color=_COLORS["blue"],
+            unselected_color=_COLORS["card"],
+            command=self._change_language
+        )
+        self._lang_seg.set("TR" if get_language() == "tr" else "EN")
+        self._lang_seg.pack(side="right", padx=24, pady=18)
 
         # ── Adim Gostergesi ──────────────────────────────
         self._step_bar = _StepBar(self, steps=[t("step_hw"), t("step_api"), t("step_voice")])
@@ -301,6 +312,27 @@ class SetupWizard(ctk.CTk):
         ).pack(anchor="w", padx=32, pady=(4, 0))
 
     # ── Navigasyon ────────────────────────────────────────────────────────────
+
+    def _change_language(self, val: str):
+        lang = val.lower()
+        set_language(lang)
+        self.cfg.set("language", "ui_language", lang)
+        self.cfg.save()
+
+        # Mevcut adimdaki girisleri kaydet ki kaybolmasinlar
+        self._save_current_step()
+
+        # Tum cocuk bilesenleri yok et ve yeniden olustur
+        for child in self.winfo_children():
+            child.destroy()
+
+        self.title(f"{t('app_name')} \u2014 {t('setup_title')}")
+        self._pages = []
+        self._build_shell()
+        self._build_page_0()   # Donanim
+        self._build_page_1()   # API Anahtarlari
+        self._build_page_2()   # Ses + Bitis
+        self._show_step(self._step)
 
     def _show_step(self, step: int):
         for p in self._pages:
