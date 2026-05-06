@@ -37,7 +37,7 @@ CULTURAL_MAP_TR_EN = {
     "üzme kendini": "Don't beat yourself up.",
     "kısmet değilmiş": "It wasn't meant to be.",
     "hayırlısı olsun": "Let's hope for the best.",
-    "kolay gelsin": "May it be easy for you.",
+    "kolay gelsin": "Good luck with your work.",
     "afiyet olsun": "Enjoy your meal.",
     "bereket versin": "Thanks, may it bring abundance.",
     "ziyade olsun": "Thank you for the meal.",
@@ -144,7 +144,9 @@ class Translator:
         """Dinamik sistem promptu olusturur. Aktif persona varsa stil talimati eklenir."""
         base = (
             f"You are a lightning-fast translator. Translate the following {src_lang} text to {tgt_lang}. "
-            f"Reply ONLY with the {tgt_lang} translation. Do not add quotes, explanations, or any other text."
+            f"Reply ONLY with the {tgt_lang} translation. Do not add quotes, explanations, or any other text. "
+            f"CRITICAL: Never translate idioms, proverbs, or cultural expressions word-for-word. "
+            f"Always find the natural, culturally equivalent expression a native {tgt_lang} speaker would actually say."
         )
         persona_template = PERSONA_TEMPLATES.get(self.persona, "")
         if persona_template:

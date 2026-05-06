@@ -1,0 +1,177 @@
+"""
+Gemma Echo — Canlı Çeviri Ekranı (Live Translation View)
+"""
+
+import customtkinter as ctk
+from tkinter import messagebox
+from gui.config import ConfigManager
+from gui.i18n import t
+from gui.pages._helpers import _C, _header, _card
+
+class LiveView(ctk.CTkFrame):
+    def __init__(self, master, cfg: ConfigManager, app):
+        super().__init__(master, fg_color=_C["bg"], corner_radius=0)
+        self.cfg = cfg
+        self.app = app
+        self._recording = False
+        self._build()
+
+    def _build(self):
+        _header(self, f"\U0001f399  {t('live_title')}",
+                t("live_subtitle"))
+
+        scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+
+        # ── Kayit Kontrolu ────────────────────────────────────────────
+        inner = _card(scroll, t("rec_control"))
+
+        # Durum satirı
+        status_row = ctk.CTkFrame(
+            inner, fg_color=_C["surface2"],
+            corner_radius=10, border_width=1, border_color=_C["border"]
+        )
+        status_row.pack(fill="x", pady=(0, 14))
+
+        self._sdot = ctk.CTkLabel(
+            status_row, text="\u23fa",
+            font=ctk.CTkFont(size=13), text_color=_C["dim"]
+        )
+        self._sdot.pack(side="left", padx=(14, 8), pady=12)
+
+        self._slbl = ctk.CTkLabel(
+            status_row,
+            text=t("live_ready_hint"),
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        )
+        self._slbl.pack(side="left", fill="x", expand=True)
+
+        # Butonlar
+        btn_row = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(0, 10))
+
+        self._btn_start = ctk.CTkButton(
+            btn_row,
+            text=f"\u25b6  {t('start')}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=_C["green"], hover_color="#1aad4e",
+            height=46, corner_radius=12,
+            command=self._start,
+        )
+        self._btn_start.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self._btn_stop = ctk.CTkButton(
+            btn_row,
+            text=f"\u25a0  {t('stop')}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=_C["surface2"], hover_color=_C["red_bg"],
+            text_color=_C["dim"],
+            height=46, corner_radius=12,
+            state="disabled",
+            command=self._stop,
+        )
+        self._btn_stop.pack(side="left", fill="x", expand=True)
+
+        # Push-to-Talk
+        ptt_row = ctk.CTkFrame(inner, fg_color="transparent")
+        ptt_row.pack(fill="x", pady=(8, 0))
+
+        lf = ctk.CTkFrame(ptt_row, fg_color="transparent")
+        lf.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            lf, text=t("ptt"),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=_C["text"], anchor="w"
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            lf, text=t("ptt_hint"),
+            font=ctk.CTkFont(size=10), text_color=_C["muted"], anchor="w"
+        ).pack(anchor="w")
+
+        self._ptt = ctk.CTkSwitch(
+            ptt_row, text="", width=52,
+            command=self._on_ptt, onvalue=True, offvalue=False,
+            progress_color=_C["blue"],
+        )
+        if self.cfg.get("recording", "push_to_talk", default=False):
+            self._ptt.select()
+        self._ptt.pack(side="right")
+
+        # ── Altyazi Kontrolu ──────────────────────────────────────────
+        ov = _card(scroll, t("overlay_title"))
+        ov_row = ctk.CTkFrame(ov, fg_color="transparent")
+        ov_row.pack(fill="x")
+
+        ctk.CTkLabel(
+            ov_row,
+            text=t("overlay_hint"),
+            font=ctk.CTkFont(size=11), text_color=_C["muted"],
+            anchor="w", wraplength=500
+        ).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(
+            ov_row, text=t("show"), width=80, height=34,
+            fg_color=_C["blue_bg"], hover_color=_C["surface2"],
+            text_color=_C["blue"], corner_radius=10,
+            font=ctk.CTkFont(size=11),
+            command=self._show_overlay,
+        ).pack(side="right")
+
+        # ── Ipuclari ──────────────────────────────────────────────────
+        tips = _card(scroll, t("tips"))
+        for tip in [
+            t("tip1"),
+            t("tip2"),
+            t("tip3"),
+        ]:
+            ctk.CTkLabel(
+                tips, text=tip,
+                font=ctk.CTkFont(size=10), text_color=_C["muted"],
+                anchor="w", wraplength=580
+            ).pack(anchor="w", pady=1)
+
+    # ── Olaylar ───────────────────────────────────────────────────────────────
+
+    def _start(self):
+        if not self.app._backend_ready:
+            messagebox.showinfo(
+                t("modeller_hazirlaniyor"),
+                t("modeller_yukleniyor_bekle")
+            )
+            return
+        self.app.start_live()
+        self._recording = True
+        self._btn_start.configure(state="disabled", fg_color=_C["dim"])
+        self._btn_stop.configure(
+            state="normal", fg_color=_C["red"], text_color=_C["text"]
+        )
+        self._sdot.configure(text_color=_C["green"])
+        self._slbl.configure(
+            text=t("live_active_hint"),
+            text_color=_C["green"]
+        )
+        if self.app._overlay:
+            self.app._overlay.deiconify()
+            self.app._overlay.lift()
+
+    def _stop(self):
+        self.app.stop_live()
+        self._recording = False
+        self._btn_start.configure(state="normal", fg_color=_C["green"])
+        self._btn_stop.configure(
+            state="disabled", fg_color=_C["surface2"], text_color=_C["dim"]
+        )
+        self._sdot.configure(text_color=_C["dim"])
+        self._slbl.configure(
+            text=t("stopped_hint"),
+            text_color=_C["muted"]
+        )
+
+    def _show_overlay(self):
+        if self.app._overlay:
+            self.app._overlay.deiconify()
+            self.app._overlay.lift()
+
+    def _on_ptt(self):
+        self.cfg.set("recording", "push_to_talk", self._ptt.get())
+        self.cfg.save()

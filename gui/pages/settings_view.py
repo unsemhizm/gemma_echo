@@ -1,0 +1,457 @@
+"""
+Gemma Echo — Ayarlar Ekranı (Settings View)
+"""
+
+import webbrowser
+import customtkinter as ctk
+from gui.config import ConfigManager
+from gui.i18n import t
+from gui.pages._helpers import _C, _header, _card, _InfoIcon
+
+class SettingsView(ctk.CTkFrame):
+    _MODES = [
+        ("interactive",      "mode_interactive"),
+        ("interactive_hq",   "mode_interactive_hq"),
+        ("online",           "mode_online"),
+        ("online_xtts",      "mode_online_xtts"),
+        ("online_local_stt", "mode_online_local_stt"),
+        ("offline_gpu",      "mode_offline_gpu"),
+        ("offline",          "mode_offline"),
+        ("hybrid_cloud_io",  "mode_hybrid_io"),
+        ("hybrid_cloud_stt", "mode_hybrid_stt"),
+        ("custom",           "mode_custom"),
+    ]
+
+    def __init__(self, master, cfg: ConfigManager, app):
+        super().__init__(master, fg_color=_C["bg"], corner_radius=0)
+        self.cfg = cfg
+        self.app = app
+        self._build()
+
+    def _build(self):
+        _header(self, f"\u2699  {t('settings_title')}",
+                t("settings_subtitle"))
+
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+
+        # ── Calisma Modu ──────────────────────────────────────────────
+        mode_card = _card(body, t("modes"))
+
+        mode_hdr = ctk.CTkFrame(mode_card, fg_color="transparent")
+        mode_hdr.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            mode_hdr, text=f"{t('preset_profile')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(mode_hdr, t("tip_preset_profile")).pack(side="left", padx=(4, 0))
+
+        mode_vals = [t(m[1]) for m in self._MODES]
+        cur       = self.cfg.get("mode", "current", default="online")
+        cur_idx   = next(
+            (i for i, m in enumerate(self._MODES) if m[0] == cur), 0
+        )
+        self._mode_combo = ctk.CTkComboBox(
+            mode_card, values=mode_vals,
+            height=36, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=self._on_mode
+        )
+        self._mode_combo.set(mode_vals[cur_idx])
+        self._mode_combo.pack(fill="x")
+
+        # ── Ozel Mod Secimi ───────────────────────────────────────────
+        custom_card = _card(body, t("settings"))
+
+        # STT satiri
+        stt_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        stt_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            stt_hdr, text=f"{t('stt_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(stt_hdr, t("tip_stt")).pack(side="left", padx=(4, 0))
+
+        stt_cur = self.cfg.get("mode", "stt", "backend", default="local_gpu")
+        self._stt_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["local_gpu", "local_cpu", "cloud_auto"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._stt_seg.set(stt_cur)
+        self._stt_seg.pack(fill="x", pady=(0, 8))
+
+        # LLM satiri
+        llm_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        llm_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            llm_hdr, text=f"{t('llm_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(llm_hdr, t("tip_llm")).pack(side="left", padx=(4, 0))
+
+        llm_cur = self.cfg.get("mode", "llm", "backend", default="online")
+        self._llm_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["online", "offline"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._llm_seg.set(llm_cur)
+        self._llm_seg.pack(fill="x", pady=(0, 8))
+
+        # TTS satiri
+        tts_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
+        tts_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            tts_hdr, text=f"{t('tts_settings')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], width=160, anchor="w"
+        ).pack(side="left")
+        _InfoIcon(tts_hdr, t("tip_tts")).pack(side="left", padx=(4, 0))
+
+        tts_cur = self.cfg.get("mode", "tts", "backend", default="online")
+        self._tts_seg = ctk.CTkSegmentedButton(
+            custom_card,
+            values=["online", "gpu", "offline"],
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._tts_seg.set(tts_cur)
+        self._tts_seg.pack(fill="x", pady=(0, 8))
+
+        # Uygula butonu
+        ctk.CTkButton(
+            custom_card, text=t("apply"),
+            height=34, corner_radius=10,
+            fg_color=_C["blue"], hover_color="#4080d0",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._apply_custom_mode
+        ).pack(fill="x")
+
+        # ── Yayıncı / İçerik Üretici Modu ──────────────────────────────
+        broad_card = _card(body, t("nav_media"))
+        
+        broad_hdr = ctk.CTkFrame(broad_card, fg_color="transparent")
+        broad_hdr.pack(fill="x", pady=(0, 6))
+        
+        ctk.CTkLabel(
+            broad_hdr, text=f"{t('broadcaster_mode')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(broad_hdr, t("tip_broadcaster")).pack(side="left", padx=(4, 0))
+
+        # Toggle ve Dropdown satırı
+        broad_row = ctk.CTkFrame(broad_card, fg_color="transparent")
+        broad_row.pack(fill="x", pady=(4, 0))
+
+        self._broad_switch = ctk.CTkSwitch(
+            broad_row, text=t("active"),
+            command=self._on_broadcaster_toggle,
+            progress_color=_C["blue"]
+        )
+        if self.cfg.get("broadcaster", "enabled", default=False):
+            self._broad_switch.select()
+        self._broad_switch.pack(side="left", padx=(0, 20))
+
+        # Cihaz listesi
+        devices = self._get_output_devices()
+        device_names = [d[1] for d in devices]
+        
+        self._device_combo = ctk.CTkComboBox(
+            broad_row, values=device_names,
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            width=300,
+            command=self._on_device_select
+        )
+        
+        cur_dev_name = self.cfg.get("broadcaster", "output_device_name", default="Default")
+        self._device_combo.set(cur_dev_name)
+        self._device_combo.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(
+            broad_card,
+            text=t("broadcaster_hint"),
+            font=ctk.CTkFont(size=9), text_color=_C["dim"]
+        ).pack(anchor="w", pady=(8, 0))
+
+        # ── Donanim bilgisi ───────────────────────────────────────────
+        hw_card = _card(body, t("hardware_profile"))
+        hw      = self.cfg.get("hardware") or {}
+        gpu_n   = hw.get("gpu", {}).get("name", "CPU")
+        ram_gb  = hw.get("ram_gb", "?")
+        cpu_c   = hw.get("cpu_cores", "?")
+        ctk.CTkLabel(
+            hw_card,
+            text=f"GPU: {gpu_n}   RAM: {ram_gb} GB   CPU: {cpu_c} cekirdek",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(anchor="w")
+
+        # ── API Anahtarlari ───────────────────────────────────────────
+        api_card = _card(body, t("api_keys"))
+        for svc, lbl, url in [
+            ("gemini",     "Gemini",     "https://aistudio.google.com/apikey"),
+            ("groq",       "Groq",       "https://console.groq.com/keys"),
+            ("elevenlabs", "ElevenLabs", "https://elevenlabs.io/app/settings/api-keys"),
+        ]:
+            self._api_row(api_card, svc, lbl, url)
+
+        # ── ElevenLabs Ses ────────────────────────────────────────────
+        voice_card = _card(body, t("elevenlabs_voice_id_label"))
+        vr = ctk.CTkFrame(voice_card, fg_color="transparent")
+        vr.pack(fill="x")
+
+        self._voice_entry = ctk.CTkEntry(
+            vr, height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            placeholder_text="Voice ID"
+        )
+        vid = self.cfg.get("elevenlabs_voice_id", default="")
+        if vid:
+            self._voice_entry.insert(0, vid)
+        self._voice_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        ctk.CTkButton(
+            vr, text=t("voice_library"), width=130, height=34,
+            fg_color=_C["surface2"], corner_radius=10,
+            command=lambda: webbrowser.open("https://elevenlabs.io/app/voice-library")
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            vr, text=t("save_settings"), width=72, height=34,
+            fg_color=_C["blue"], corner_radius=10,
+            command=self._save_voice
+        ).pack(side="left")
+
+        # ── Overlay Opakligi ──────────────────────────────────────────
+        ovl_card = _card(body, t("overlay_title"))
+        op_row = ctk.CTkFrame(ovl_card, fg_color="transparent")
+        op_row.pack(fill="x")
+
+        ctk.CTkLabel(
+            op_row, text=f"{t('opacity')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+
+        self._op_slider = ctk.CTkSlider(
+            op_row, from_=0.3, to=1.0, width=200,
+            button_color=_C["blue"], progress_color=_C["blue"],
+            command=self._on_opacity
+        )
+        self._op_slider.set(self.cfg.get("overlay", "opacity", default=0.92))
+        self._op_slider.pack(side="left", padx=12)
+
+        self._op_lbl = ctk.CTkLabel(
+            op_row, text=f"{self.cfg.get('overlay','opacity',default=0.92):.0%}",
+            font=ctk.CTkFont(size=11), text_color=_C["text"], width=36
+        )
+        self._op_lbl.pack(side="left")
+
+        # VAD hassasiyet
+        vad_row = ctk.CTkFrame(ovl_card, fg_color="transparent")
+        vad_row.pack(fill="x", pady=(10, 0))
+
+        ctk.CTkLabel(
+            vad_row, text=f"{t('vad_settings')} (0-3):",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+
+        self._vad_seg = ctk.CTkSegmentedButton(
+            vad_row, values=["0", "1", "2", "3"],
+            command=self._on_vad,
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        cur_vad = str(self.cfg.get("recording", "vad_aggressiveness", default=2))
+        self._vad_seg.set(cur_vad)
+        self._vad_seg.pack(side="left", padx=12)
+
+        # ── Çeviri Karakteri (Persona) ────────────────────────────────────────
+        persona_card = _card(body, t("persona_title"))
+
+        persona_hdr = ctk.CTkFrame(persona_card, fg_color="transparent")
+        persona_hdr.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            persona_hdr, text=f"{t('persona_style')}:",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"]
+        ).pack(side="left")
+        _InfoIcon(persona_hdr, t("tip_persona")).pack(side="left", padx=(4, 0))
+
+        _PERSONA_OPTIONS = [
+            ("none",     "persona_none"),
+            ("official", "persona_official"),
+            ("streamer", "persona_streamer"),
+            ("casual",   "persona_casual"),
+            ("literary", "persona_literary"),
+        ]
+        persona_vals = [t(p[1]) for p in _PERSONA_OPTIONS]
+        cur_persona  = self.cfg.get("persona", default="none")
+        cur_persona_idx = next(
+            (i for i, p in enumerate(_PERSONA_OPTIONS) if p[0] == cur_persona), 0
+        )
+        self._persona_combo = ctk.CTkComboBox(
+            persona_card, values=persona_vals,
+            height=36, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=lambda display: self._on_persona(display, _PERSONA_OPTIONS)
+        )
+        self._persona_combo.set(persona_vals[cur_persona_idx])
+        self._persona_combo.pack(fill="x")
+
+        # ── UI Language Switcher ──────────────────────────────────────
+        lang_card = _card(body, t("ui_language_setting"))
+        lang_row = ctk.CTkFrame(lang_card, fg_color="transparent")
+        lang_row.pack(fill="x")
+
+        self._lang_seg = ctk.CTkSegmentedButton(
+            lang_row, values=["tr", "en"],
+            command=self._on_ui_lang,
+            selected_color=_C["blue"], selected_hover_color="#4080d0",
+            unselected_color=_C["surface2"],
+            font=ctk.CTkFont(size=11)
+        )
+        self._lang_seg.set(self.cfg.get("language", "ui_language", default="tr"))
+        self._lang_seg.pack(fill="x")
+
+    # ── Yardimci: API satiri ──────────────────────────────────────────────────
+
+    def _api_row(self, parent, svc: str, lbl: str, url: str):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=3)
+
+        ctk.CTkLabel(
+            row, text=f"{lbl}:", width=82,
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+
+        entry = ctk.CTkEntry(
+            row, show="\u2022", height=32, corner_radius=8,
+            font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"]
+        )
+        existing = self.cfg.get("api_keys", svc, default="")
+        if existing:
+            entry.insert(0, existing)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        ctk.CTkButton(
+            row, text="Al \u2192", width=60, height=32, corner_radius=8,
+            fg_color=_C["surface2"],
+            command=lambda u=url: webbrowser.open(u)
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            row, text=t("save_settings"), width=72, height=32, corner_radius=8,
+            fg_color=_C["blue"],
+            command=lambda s=svc, e=entry: self.cfg.set_api_key(s, e.get().strip())
+        ).pack(side="left")
+
+    # ── Olaylar ───────────────────────────────────────────────────────────────
+
+    def _on_mode(self, display: str):
+        key = next((m[0] for m in self._MODES if t(m[1]) == display), None)
+        if key:
+            self.app.switch_mode(key)
+
+    def _on_opacity(self, val: float):
+        v = round(val, 2)
+        self.cfg.set("overlay", "opacity", v)
+        self.cfg.save()
+        self._op_lbl.configure(text=f"{v:.0%}")
+        if self.app._overlay:
+            self.app._overlay.wm_attributes("-alpha", v)
+
+    def _on_vad(self, val: str):
+        self.cfg.set("recording", "vad_aggressiveness", int(val))
+        self.cfg.save()
+
+    def _apply_custom_mode(self):
+        stt = self._stt_seg.get()
+        llm = self._llm_seg.get()
+        tts = self._tts_seg.get()
+
+        self.cfg.set("mode", "stt", "backend", stt)
+        self.cfg.set("mode", "llm", "backend", llm)
+        self.cfg.set("mode", "tts", "backend", tts)
+        self.cfg.save()
+
+        # Combo'yu "custom" olarak guncelle
+        custom_display = next(
+            (t(m[1]) for m in self._MODES if m[0] == "custom"), None
+        )
+        if custom_display:
+            self._mode_combo.set(custom_display)
+
+        self.app.switch_mode("custom")
+
+    def _save_voice(self):
+        vid = self._voice_entry.get().strip()
+        if vid:
+            self.cfg.set_voice(vid)
+
+    def _get_output_devices(self):
+        """Sistemdeki ses çıkış cihazlarını listeler."""
+        import sounddevice as sd
+        try:
+            devices = sd.query_devices()
+            outputs = [(None, "Default")]
+            for i, d in enumerate(devices):
+                if d['max_output_channels'] > 0:
+                    outputs.append((i, d['name']))
+            return outputs
+        except Exception as e:
+            print(f"[HATA] Ses cihazlari listelenemedi: {e}")
+            return [(None, "Default")]
+
+    def _on_broadcaster_toggle(self):
+        enabled = self._broad_switch.get()
+        self.cfg.set("broadcaster", "enabled", bool(enabled))
+        self.cfg.save()
+
+        # Synthesizer'i guncelle (backend hazir degilse atla)
+        if not self.app._orchestrator:
+            return
+        if enabled:
+            self._on_device_select(self._device_combo.get())
+        else:
+            self.app._orchestrator.synthesizer.set_output_device(None)
+
+    def _on_device_select(self, name: str):
+        devices = self._get_output_devices()
+        idx = next((d[0] for d in devices if d[1] == name), None)
+
+        self.cfg.set("broadcaster", "output_device_index", idx)
+        self.cfg.set("broadcaster", "output_device_name", name)
+        self.cfg.save()
+
+        if self._broad_switch.get() and self.app._orchestrator:
+            self.app._orchestrator.synthesizer.set_output_device(idx)
+
+    def _on_persona(self, display: str, options: list):
+        key = next((p[0] for p in options if t(p[1]) == display), "none")
+        self.cfg.set("persona", key)
+        self.cfg.save()
+        # Canlı güncelleme: orkestra hazırsa anında translator'a bildir
+        if self.app._orchestrator:
+            self.app._orchestrator.translator.set_persona(key)
+
+    def _on_ui_lang(self, lang: str):
+        from gui.i18n import set_language
+        set_language(lang)
+
+        self.cfg.set("language", "ui_language", lang)
+        self.cfg.save()
+
+        # Rebuild MainWindow dynamically
+        main_win = self.app._main
+        if main_win:
+            for child in main_win.winfo_children():
+                child.destroy()
+            main_win.title(t("app_name"))
+            main_win._build()
+            main_win.switch_view("settings")
