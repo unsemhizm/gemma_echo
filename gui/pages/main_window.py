@@ -88,6 +88,7 @@ class MainWindow(ctk.CTk):
 
     def _on_close(self):
         self.app.stop_live()
+        self.app.stop_inbound()
         self.quit()
         self.destroy()
 

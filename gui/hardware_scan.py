@@ -1,7 +1,7 @@
 """
 Sistem donanim tarayicisi.
 OS, RAM, CPU ve GPU bilgilerini tespit eder;
-bu bilgilere gore en uygun calisma profilini onerير.
+bu bilgilere gore en uygun calisma profilini onerir.
 """
 
 import platform

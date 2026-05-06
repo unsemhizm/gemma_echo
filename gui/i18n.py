@@ -57,6 +57,8 @@ STRINGS = {
         "tip3": "\u2022 You can also translate files from the 'Media' tab while recording.",
         "live_active_hint": "Live listening active \u2014 speak...",
         "stopped_hint": "Stopped \u2014 Press \u25b6 to start",
+        "ptt_outbound_active": "YOU ARE SPEAKING",
+        "ptt_inbound_active": "LISTENING TO OTHER PARTY",
         "modeller_hazirlaniyor": "Models Preparing",
         "modeller_yukleniyor_bekle": "Models are still loading.\nPlease wait a minute and try again.",
         # Media View
@@ -243,6 +245,8 @@ STRINGS = {
         "tip3": "\u2022 Kayıt sırasında 'Medya' sekmesinden dosya çevirisi de yapabilirsiniz.",
         "live_active_hint": "Canlı dinleme aktif \u2014 konuşun...",
         "stopped_hint": "Durduruldu \u2014 Başlamak için \u25b6 butonuna basın",
+        "ptt_outbound_active": "SEN KONUŞUYORSUN",
+        "ptt_inbound_active": "KARŞI TARAF DİNLENİYOR",
         "modeller_hazirlaniyor": "Modeller Hazırlanıyor",
         "modeller_yukleniyor_bekle": "Modeller henüz yükleniyor.\nBir dakika bekleyip tekrar deneyin.",
         # Media View

@@ -237,6 +237,7 @@ class GemmaEchoApp:
             self._ptt_mode = None
             if self._overlay:
                 self._overlay.set_status(t("ready_stopped"), _C["dim"])
+            self._notify_live_view_ptt(None)
             return
 
         # Once her ikisini de durdur, sonra istenen yonu ac
@@ -247,11 +248,21 @@ class GemmaEchoApp:
         if mode == "outbound":
             self.start_live()
             if self._overlay:
-                self._overlay.set_status("SEN KONUSUYORSUN", _C["blue"])
+                self._overlay.set_status(t("ptt_outbound_active"), _C["blue"])
         elif mode == "inbound":
             self.start_inbound()
             if self._overlay:
-                self._overlay.set_status("KARSI TARAF DINLENIYOR", _C["green"])
+                self._overlay.set_status(t("ptt_inbound_active"), _C["green"])
+
+        self._notify_live_view_ptt(mode)
+
+    def _notify_live_view_ptt(self, mode):
+        """LiveView PTT buton görselini thread-safe olarak güncelle."""
+        if not self._main:
+            return
+        live = getattr(self._main, "_views", {}).get("live")
+        if live and hasattr(live, "_update_ptt_state"):
+            self._main.after(0, lambda m=mode: live._update_ptt_state(m))
 
     # ── Global Hotkey Kaydedici ────────────────────────────────────────────────
 

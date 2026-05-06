@@ -159,6 +159,7 @@ class LiveView(ctk.CTkFrame):
 
     def _stop(self):
         self.app.stop_live()
+        self.app.stop_inbound()
         self._recording = False
         self._btn_start.configure(state="normal", fg_color=_C["green"])
         self._btn_stop.configure(
@@ -169,6 +170,25 @@ class LiveView(ctk.CTkFrame):
             text=t("stopped_hint"),
             text_color=_C["muted"]
         )
+        self._update_ptt_state(None)
+
+    def _update_ptt_state(self, mode):
+        """PTT mod değişince buton görsellerini güncelle (hotkey veya butondan çağrılır)."""
+        if mode == "outbound":
+            self._btn_outbound.configure(fg_color=_C["blue_bg"], text_color=_C["blue"])
+            self._btn_inbound.configure(fg_color=_C["surface2"], text_color=_C["muted"])
+            self._sdot.configure(text_color=_C["blue"])
+            self._slbl.configure(text=t("ptt_outbound_active"), text_color=_C["blue"])
+        elif mode == "inbound":
+            self._btn_outbound.configure(fg_color=_C["surface2"], text_color=_C["muted"])
+            self._btn_inbound.configure(fg_color=_C["green_bg"], text_color=_C["green"])
+            self._sdot.configure(text_color=_C["green"])
+            self._slbl.configure(text=t("ptt_inbound_active"), text_color=_C["green"])
+        else:
+            self._btn_outbound.configure(fg_color=_C["surface2"], text_color=_C["muted"])
+            self._btn_inbound.configure(fg_color=_C["surface2"], text_color=_C["muted"])
+            self._sdot.configure(text_color=_C["dim"])
+            self._slbl.configure(text=t("live_ready_hint"), text_color=_C["muted"])
 
     def _show_overlay(self):
         if self.app._overlay:

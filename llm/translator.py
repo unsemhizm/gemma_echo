@@ -5,7 +5,6 @@ import string
 import threading
 import torch
 from dotenv import load_dotenv
-from groq import Groq
 from google import genai
 from google.genai import types
 from llama_cpp import Llama
@@ -88,10 +87,9 @@ class Translator:
         """
         Çeviri katmanını başlatır. v8 Multi-State Mimarisi.
 
-        ONLINE MOD — 3 Katmanlı Turbo Fallback Zinciri:
+        ONLINE MOD — 2 Katmanlı Fallback Zinciri:
           Katman 1: Gemini API (Gemma 4 26B)     → Ana Çevirmen (Kalite Odaklı)
           Katman 2: Gemini API (Gemini 2.5 Flash)→ Hız Yedeği
-          Katman 3: Groq (Llama 3.1 8B)          → Hız / Güvenlik Yedeği
 
         OFFLINE MOD — Sıfır Bağımlılık (Zero-Dependency):
           llama-cpp-python → ./models/gemma-4-q4.gguf
@@ -113,13 +111,6 @@ class Translator:
         
         # 2. İKİNCİL MOTOR: GEMINI API (GEMINI 2.5 FLASH)
         self.gemini_fallback_model = "gemini-2.5-flash"
-
-        # 3. ÜÇÜNCÜL MOTOR: GROQ (HIZ YEDEĞİ)
-        self.groq_key = os.getenv("GROQ_API_KEY")
-        if not self.groq_key:
-            raise ValueError("GROQ_API_KEY eksik!")
-        self.groq_client = Groq(api_key=self.groq_key.strip())
-        self.groq_model = "llama-3.1-8b-instant"
 
         # ─── OFFLINE MOTOR (llama-cpp / Zero-Dependency) ───────
         # Model talep üzerine yüklenir — online modda VRAM boşa işgal etmez.
@@ -194,7 +185,7 @@ class Translator:
     def set_mode(self, mode: str):
         """
         Çeviri modunu değiştirir.
-        "online"  → Bulut API'leri (Gemini API [Gemma 4] → Gemini API [Flash] → Groq)
+        "online"  → Bulut API'leri (Gemini API [Gemma 4] → Gemini API [Flash])
         "offline" → Yerel llama-cpp (./models/gemma-4-q4.gguf, lazy load)
         """
         if mode not in ("online", "offline"):
@@ -300,8 +291,8 @@ class Translator:
     def translate_online(self, text_tr: str, context: list = [], hint: str = "") -> dict:
         """
         Bulut API'leri üzerinden çeviri yapar.
-        3 katmanlı fallback: Gemini API (Gemma 4) başarısız → Gemini 2.5 Flash → Groq
-        Hepsi başarısız olursa hata döner.
+        2 katmanlı fallback: Gemini API (Gemma 4) başarısız → Gemini 2.5 Flash
+        İkisi de başarısız olursa hata döner.
         """
         # Context varsa kullanıcı mesajını zenginleştir
         user_message = self._build_user_message(text_tr, context, hint)
@@ -332,35 +323,15 @@ class Translator:
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
         except TimeoutError:
-            print(f"\n[UYARI] Gemini 2.5 Flash Zaman Asimi (8s) -> Groq'a Geciliyor...")
+            print(f"\n[KRİTİK HATA] Gemini 2.5 Flash Zaman Asimi (8s). Tüm katmanlar başarısız.")
         except Exception as e:
-            print(f"\n[UYARI] Gemini 2.5 Flash Hatasi: {e} -> Groq'a Geciliyor...")
+            print(f"\n[KRİTİK HATA] Gemini 2.5 Flash Hatasi: {e}. Tüm katmanlar başarısız.")
 
-        # --- KATMAN 3: GROQ ---
-        start_time = time.time()
-        try:
-            response = self.groq_client.chat.completions.create(
-                model=self.groq_model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.1,
-                max_tokens=300
-            )
-            latency = int((time.time() - start_time) * 1000)
-            return {
-                "translation": response.choices[0].message.content.strip(),
-                "latency_ms": latency,
-                "engine": f"Groq ({self.groq_model})"
-            }
-        except Exception as e:
-            print(f"\n[KRİTİK HATA] Tüm Online Çeviri Katmanları Çöktü: {e}")
-            return {
-                "translation": "[ÇEVİRİ HATASI]",
-                "latency_ms": 0,
-                "engine": "Failed"
-            }
+        return {
+            "translation": "[ÇEVİRİ HATASI]",
+            "latency_ms": 0,
+            "engine": "Failed"
+        }
 
     # ═══════════════════════════════════════════════════════════
     # OFFLINE ÇEVİRİ — Yerel llama-cpp (Zero-Dependency)
