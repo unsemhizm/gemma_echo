@@ -303,6 +303,109 @@ class SettingsView(ctk.CTkFrame):
         self._persona_combo.set(persona_vals[cur_persona_idx])
         self._persona_combo.pack(fill="x")
 
+        # ── Ses Cihazlari ─────────────────────────────────────────────
+        dev_card = _card(body, "Ses Cihazlari")
+
+        # Mikrofon satirı
+        mic_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
+        mic_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            mic_hdr, text="Mikrofon (Sen konusurken):",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+
+        mic_devices   = self._get_input_devices()
+        mic_names     = [d[1] for d in mic_devices]
+        cur_mic_name  = self.cfg.get("recording", "mic_device_name", default="Varsayilan")
+        self._mic_combo = ctk.CTkComboBox(
+            dev_card, values=mic_names,
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=self._on_mic_select
+        )
+        self._mic_combo.set(cur_mic_name if cur_mic_name in mic_names else mic_names[0])
+        self._mic_combo.pack(fill="x", pady=(0, 10))
+
+        # Loopback (karsi taraf) satirı
+        loop_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
+        loop_hdr.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            loop_hdr, text="Loopback Cihazi (Karsi tarafi dinlerken):",
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+
+        loopback_devices  = self._get_loopback_devices()
+        loopback_names    = [d[1] for d in loopback_devices]
+        cur_loop_name     = self.cfg.get("inbound", "loopback_device_name", default="")
+        self._loop_combo  = ctk.CTkComboBox(
+            dev_card, values=loopback_names if loopback_names else ["Loopback bulunamadi"],
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=self._on_loopback_select
+        )
+        matched = next((n for n in loopback_names if cur_loop_name and cur_loop_name.lower() in n.lower()), None)
+        self._loop_combo.set(matched or (loopback_names[0] if loopback_names else "Loopback bulunamadi"))
+        self._loop_combo.pack(fill="x", pady=(0, 4))
+
+        ctk.CTkLabel(
+            dev_card,
+            text="Zoom/Meet cikisini dinlemek icin hoparlor cihazini secin.",
+            font=ctk.CTkFont(size=9), text_color=_C["dim"]
+        ).pack(anchor="w")
+
+        # Tus Atama satirlari
+        sep = ctk.CTkFrame(dev_card, fg_color=_C["border"], height=1)
+        sep.pack(fill="x", pady=(12, 10))
+
+        ctk.CTkLabel(
+            dev_card, text="Klavye Kisayollari:",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["text"], anchor="w"
+        ).pack(anchor="w", pady=(0, 6))
+
+        # Outbound tusu
+        out_row = ctk.CTkFrame(dev_card, fg_color="transparent")
+        out_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            out_row, text="Sen konusurken:", width=160,
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+        self._hotkey_out_entry = ctk.CTkEntry(
+            out_row, height=32, corner_radius=8, width=140,
+            font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            placeholder_text="ornek: space, f9, ctrl+shift"
+        )
+        self._hotkey_out_entry.insert(
+            0, self.cfg.get("inbound", "hotkey_outbound", default="space")
+        )
+        self._hotkey_out_entry.pack(side="left")
+
+        # Inbound tusu
+        in_row = ctk.CTkFrame(dev_card, fg_color="transparent")
+        in_row.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            in_row, text="Karsi tarafi dinlerken:", width=160,
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+        self._hotkey_in_entry = ctk.CTkEntry(
+            in_row, height=32, corner_radius=8, width=140,
+            font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            placeholder_text="ornek: alt, f10, ctrl+alt"
+        )
+        self._hotkey_in_entry.insert(
+            0, self.cfg.get("inbound", "hotkey_inbound", default="alt")
+        )
+        self._hotkey_in_entry.pack(side="left")
+
+        ctk.CTkButton(
+            dev_card, text="Tuslari Kaydet ve Uygula",
+            height=32, corner_radius=8,
+            fg_color=_C["blue"], hover_color="#4080d0",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._save_hotkeys
+        ).pack(fill="x")
+
         # ── UI Language Switcher ──────────────────────────────────────
         lang_card = _card(body, t("ui_language_setting"))
         lang_row = ctk.CTkFrame(lang_card, fg_color="transparent")
@@ -395,7 +498,7 @@ class SettingsView(ctk.CTkFrame):
             self.cfg.set_voice(vid)
 
     def _get_output_devices(self):
-        """Sistemdeki ses çıkış cihazlarını listeler."""
+        """Sistemdeki ses cikis cihazlarini listeler."""
         import sounddevice as sd
         try:
             devices = sd.query_devices()
@@ -407,6 +510,36 @@ class SettingsView(ctk.CTkFrame):
         except Exception as e:
             print(f"[HATA] Ses cihazlari listelenemedi: {e}")
             return [(None, "Default")]
+
+    def _get_input_devices(self):
+        """Sistemdeki mikrofon (giris) cihazlarini listeler."""
+        import sounddevice as sd
+        try:
+            devices = sd.query_devices()
+            inputs = [(None, "Varsayilan")]
+            for i, d in enumerate(devices):
+                if d['max_input_channels'] > 0:
+                    try:
+                        ha = sd.query_hostapis(d['hostapi'])
+                        # Sadece WASAPI ve MME cihazlarini goster (WDM-KS gizle — karsasiklik cikarir)
+                        if ha['name'] in ('Windows WASAPI', 'MME'):
+                            inputs.append((i, d['name']))
+                    except Exception:
+                        pass
+            return inputs
+        except Exception as e:
+            print(f"[HATA] Mikrofon listelenemedi: {e}")
+            return [(None, "Varsayilan")]
+
+    def _get_loopback_devices(self):
+        """WASAPI Loopback cihazlarini listeler (soundcard kullanir)."""
+        try:
+            import soundcard as sc
+            loopbacks = [m for m in sc.all_microphones(include_loopback=True) if m.isloopback]
+            return [(m.id, m.name) for m in loopbacks]
+        except Exception as e:
+            print(f"[HATA] Loopback cihazlari listelenemedi: {e}")
+            return []
 
     def _on_broadcaster_toggle(self):
         enabled = self._broad_switch.get()
@@ -431,6 +564,42 @@ class SettingsView(ctk.CTkFrame):
 
         if self._broad_switch.get() and self.app._orchestrator:
             self.app._orchestrator.synthesizer.set_output_device(idx)
+
+    def _on_mic_select(self, name: str):
+        """Secilen mikrofonu config'e kaydet."""
+        devices = self._get_input_devices()
+        idx = next((d[0] for d in devices if d[1] == name), None)
+        self.cfg.set("recording", "mic_device_index", idx)
+        self.cfg.set("recording", "mic_device_name",  name)
+        self.cfg.save()
+
+    def _on_loopback_select(self, name: str):
+        """Secilen loopback cihazini config'e kaydet."""
+        self.cfg.set("inbound", "loopback_device_name", name)
+        self.cfg.save()
+
+    def _save_hotkeys(self):
+        """Girilen tuslari config'e kaydet ve aninda yeniden kaydet."""
+        key_out = self._hotkey_out_entry.get().strip().lower()
+        key_in  = self._hotkey_in_entry.get().strip().lower()
+
+        if not key_out or not key_in:
+            return
+        if key_out == key_in:
+            self._hotkey_out_entry.configure(border_color=_C["red"])
+            self._hotkey_in_entry.configure(border_color=_C["red"])
+            return
+
+        self._hotkey_out_entry.configure(border_color=_C["border"])
+        self._hotkey_in_entry.configure(border_color=_C["border"])
+
+        self.cfg.set("inbound", "hotkey_outbound", key_out)
+        self.cfg.set("inbound", "hotkey_inbound",  key_in)
+        self.cfg.save()
+
+        # Backend hazirsa hotkey'leri aninda yeniden kaydet
+        if self.app._backend_ready:
+            self.app._reregister_hotkeys(key_out, key_in)
 
     def _on_persona(self, display: str, options: list):
         key = next((p[0] for p in options if t(p[1]) == display), "none")

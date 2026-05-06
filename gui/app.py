@@ -64,6 +64,8 @@ class GemmaEchoApp:
         self._main                             = None   # MainWindow
         self._backend_ready                    = False
         self._recorder                         = None
+        self._inbound_recorder                 = None   # loopback recorder
+        self._ptt_mode                         = None   # "outbound" | "inbound" | None
         self._orchestrator                     = None
         self._backend_thread                   = None
 
@@ -137,7 +139,7 @@ class GemmaEchoApp:
 
             self._backend_ready = True
             self._overlay.set_status(t("ready_vad"), _C["dim"])
-            
+
             # ─── BROADCASTER AYARLARI ───────────────────────────
             if self.cfg.get("broadcaster", "enabled", default=False):
                 dev_idx = self.cfg.get("broadcaster", "output_device_index")
@@ -145,6 +147,9 @@ class GemmaEchoApp:
             self._overlay.after(0, lambda: self._overlay._dot.configure(
                 text_color=_C["yellow"]
             ))
+
+            # ─── GLOBAL HOTKEY KAYDEDICI ────────────────────────
+            self._register_hotkeys()
 
         except Exception as e:
             self._overlay.set_status(t("mode_error", str(e)), _C["red"])
@@ -161,11 +166,13 @@ class GemmaEchoApp:
 
         from stt.recorder import Recorder
         aggressiveness = self.cfg.get("recording", "vad_aggressiveness", default=2)
+        mic_idx = self.cfg.get("recording", "mic_device_index", default=None)
         self._recorder = Recorder(
-            self._orchestrator, 
+            self._orchestrator,
             aggressiveness=aggressiveness,
             transcriber=self._transcriber,
-            config=self.cfg
+            config=self.cfg,
+            device=int(mic_idx) if mic_idx is not None else None,
         )
 
         threading.Thread(target=self._recorder.run, daemon=True).start()
@@ -181,6 +188,107 @@ class GemmaEchoApp:
             self._recorder = None
         if self._overlay:
             self._overlay.set_status(t("ready_stopped"), _C["dim"])
+
+    # ── Inbound (Loopback) Kontrolu ────────────────────────────────────────────
+
+    def start_inbound(self):
+        """WASAPI Loopback'ten karsi tarafin sesini dinlemeye basla."""
+        if not self._backend_ready:
+            return
+        if self._inbound_recorder is not None:
+            return  # zaten calisiyor
+
+        from stt.recorder import LoopbackRecorder
+
+        # process_inbound() cagiran proxy — mevcut Orchestrator'u degistirmiyor
+        class _InboundProxy:
+            def __init__(self, orch):
+                self._orch = orch
+            def process(self, audio_path):
+                self._orch.process_inbound(audio_path)
+
+        proxy      = _InboundProxy(self._orchestrator)
+        dev_name   = self.cfg.get("inbound", "loopback_device_name", default=None)
+
+        self._inbound_recorder = LoopbackRecorder(
+            proxy,
+            config=self.cfg,
+            device_name=dev_name,
+        )
+        threading.Thread(target=self._inbound_recorder.run, daemon=True).start()
+
+    def stop_inbound(self):
+        if self._inbound_recorder:
+            self._inbound_recorder._stop_event.set()
+            self._inbound_recorder = None
+
+    # ── Dual PTT Anahtarlama ───────────────────────────────────────────────────
+
+    def switch_ptt(self, mode: str):
+        """
+        mode: "outbound" → sen konusursun (mikrofon aktif, loopback durur)
+              "inbound"  → karsi tarafi dinlersin (loopback aktif, mikrofon durur)
+        Ayni moda tekrar basilirsa toggle gibi davranir (durur).
+        """
+        if mode == self._ptt_mode:
+            # Ayni tusa tekrar basildi — her ikisini durdur
+            self.stop_live()
+            self.stop_inbound()
+            self._ptt_mode = None
+            if self._overlay:
+                self._overlay.set_status(t("ready_stopped"), _C["dim"])
+            return
+
+        # Once her ikisini de durdur, sonra istenen yonu ac
+        self.stop_live()
+        self.stop_inbound()
+        self._ptt_mode = mode
+
+        if mode == "outbound":
+            self.start_live()
+            if self._overlay:
+                self._overlay.set_status("SEN KONUSUYORSUN", _C["blue"])
+        elif mode == "inbound":
+            self.start_inbound()
+            if self._overlay:
+                self._overlay.set_status("KARSI TARAF DINLENIYOR", _C["green"])
+
+    # ── Global Hotkey Kaydedici ────────────────────────────────────────────────
+
+    def _register_hotkeys(self):
+        """
+        Global klavye kisayollarini kaydeder.
+        Varsayilan: SPACE = sen konusursun, ALT = karsi tarafi dinle
+        config.json'dan override edilebilir:
+          "inbound": { "hotkey_outbound": "space", "hotkey_inbound": "alt" }
+        """
+        try:
+            import keyboard
+
+            key_out = self.cfg.get("inbound", "hotkey_outbound", default="space")
+            key_in  = self.cfg.get("inbound", "hotkey_inbound",  default="alt")
+
+            keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
+            keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
+
+            print(f"[PTT] Hotkey kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf")
+        except ImportError:
+            print("[UYARI] 'keyboard' kutuphanesi bulunamadi. 'pip install keyboard' calistir.")
+        except Exception as e:
+            print(f"[UYARI] Hotkey kaydedilemedi: {e}")
+
+    def _reregister_hotkeys(self, key_out: str, key_in: str):
+        """Mevcut hotkey'leri temizleyip yeni tuslarla yeniden kaydet."""
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+            keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
+            keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
+            print(f"[PTT] Hotkey yeniden kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf")
+            if self._overlay:
+                self._overlay.set_status(f"Tuslar guncellendi: {key_out} / {key_in}", _C["blue"])
+        except Exception as e:
+            print(f"[UYARI] Hotkey yeniden kaydedilemedi: {e}")
 
     def switch_mode(self, mode: str):
         if not self._orchestrator:

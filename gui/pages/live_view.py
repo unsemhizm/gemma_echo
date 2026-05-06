@@ -72,30 +72,33 @@ class LiveView(ctk.CTkFrame):
         )
         self._btn_stop.pack(side="left", fill="x", expand=True)
 
-        # Push-to-Talk
+        # Dual PTT Butonlari
         ptt_row = ctk.CTkFrame(inner, fg_color="transparent")
-        ptt_row.pack(fill="x", pady=(8, 0))
+        ptt_row.pack(fill="x", pady=(10, 0))
 
-        lf = ctk.CTkFrame(ptt_row, fg_color="transparent")
-        lf.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            lf, text=t("ptt"),
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=_C["text"], anchor="w"
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            lf, text=t("ptt_hint"),
-            font=ctk.CTkFont(size=10), text_color=_C["muted"], anchor="w"
-        ).pack(anchor="w")
+            ptt_row, text="Cift Yonlu Mod:",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=_C["text"],
+        ).pack(side="left", padx=(0, 10))
 
-        self._ptt = ctk.CTkSwitch(
-            ptt_row, text="", width=52,
-            command=self._on_ptt, onvalue=True, offvalue=False,
-            progress_color=_C["blue"],
+        self._btn_outbound = ctk.CTkButton(
+            ptt_row, text="SPACE  —  Sen Konusursun",
+            font=ctk.CTkFont(size=10),
+            fg_color=_C["surface2"], hover_color=_C["blue_bg"],
+            text_color=_C["muted"], height=30, corner_radius=8,
+            command=lambda: self.app.switch_ptt("outbound"),
         )
-        if self.cfg.get("recording", "push_to_talk", default=False):
-            self._ptt.select()
-        self._ptt.pack(side="right")
+        self._btn_outbound.pack(side="left", padx=(0, 6))
+
+        self._btn_inbound = ctk.CTkButton(
+            ptt_row, text="ALT  —  Karsi Tarafi Dinle",
+            font=ctk.CTkFont(size=10),
+            fg_color=_C["surface2"], hover_color="#1a3a1a",
+            text_color=_C["muted"], height=30, corner_radius=8,
+            command=lambda: self.app.switch_ptt("inbound"),
+        )
+        self._btn_inbound.pack(side="left")
 
         # ── Altyazi Kontrolu ──────────────────────────────────────────
         ov = _card(scroll, t("overlay_title"))
@@ -172,6 +175,3 @@ class LiveView(ctk.CTkFrame):
             self.app._overlay.deiconify()
             self.app._overlay.lift()
 
-    def _on_ptt(self):
-        self.cfg.set("recording", "push_to_talk", self._ptt.get())
-        self.cfg.save()

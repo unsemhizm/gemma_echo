@@ -30,8 +30,10 @@ _C = {
     "border":   "#30363d",   # kenarlık
     "blue":     "#58a6ff",   # EN metni rengi
     "gray":     "#8b949e",   # TR metni rengi
-    "green":    "#3fb950",   # aktif gösterge
-    "yellow":   "#d29922",   # bekleme
+    "green":         "#3fb950",   # aktif gösterge
+    "yellow":        "#d29922",   # bekleme
+    "inbound_text":  "#3fb950",   # karsi taraf metni (yesil)
+    "outbound_text": "#58a6ff",   # kendi metni (mavi)
     "red":      "#f85149",   # hata
     "white":    "#e6edf3",   # genel metin
     "dim":      "#484f58",   # buton hover
@@ -139,6 +141,16 @@ class Overlay(ctk.CTkToplevel):
         title.pack(side="left")
         title.bind("<ButtonPress-1>", self._drag_start)
         title.bind("<B1-Motion>",     self._drag_move)
+
+        # Yon gostergesi — "SEN" veya "KARSI TARAF"
+        self._dir_label = ctk.CTkLabel(
+            left, text="",
+            font=ctk.CTkFont(size=9, weight="bold"),
+            text_color=_C["dim"]
+        )
+        self._dir_label.pack(side="left", padx=(8, 0))
+        self._dir_label.bind("<ButtonPress-1>", self._drag_start)
+        self._dir_label.bind("<B1-Motion>",     self._drag_move)
 
         # Sağ: butonlar
         right = ctk.CTkFrame(bar, fg_color="transparent")
@@ -276,6 +288,7 @@ class Overlay(ctk.CTkToplevel):
             self._show_error(str(data["error"]))
             return
 
+        direction = data.get("direction", "outbound")
         text_tr = data.get("text_tr", "")
         text_en = data.get("text_en", "")
         engine  = data.get("engine", "")
@@ -286,18 +299,28 @@ class Overlay(ctk.CTkToplevel):
         # Aktif çeviri — click-through kapat (sürüklenebilsin)
         self._set_clickthrough(False)
 
-        # Metinler
-        self._tr_label.configure(text=text_tr, text_color=_C["gray"])
-        self._en_label.configure(text=text_en, text_color=_C["white"])
+        if direction == "inbound":
+            # Karsi taraf konusuyor — yesil tema
+            self._tr_label.configure(text=text_tr, text_color=_C["inbound_text"])
+            self._en_label.configure(text=text_en, text_color=_C["white"])
+            self._dot.configure(text_color=_C["inbound_text"])
+            self._dir_label.configure(text="KARSI TARAF", text_color=_C["inbound_text"])
+            status_color = _C["inbound_text"]
+        else:
+            # Sen konusuyorsun — mavi tema
+            self._tr_label.configure(text=text_tr, text_color=_C["gray"])
+            self._en_label.configure(text=text_en, text_color=_C["white"])
+            self._dot.configure(text_color=_C["green"])
+            self._dir_label.configure(text="SEN", text_color=_C["outbound_text"])
+            status_color = _C["green"]
 
         # Durum cubugu
-        e2e_s = f"{e2e_ms/1000:.1f}s"
+        e2e_s = f"{e2e_ms/1000:.1f}s" if e2e_ms else "—"
         self._status_label.configure(
             text=f"{t('stt')} {stt_ms}ms · {t('llm')} {llm_ms}ms · {t('e2e')} {e2e_s}",
-            text_color=_C["green"]
+            text_color=status_color
         )
         self._engine_label.configure(text=engine, text_color=_C["blue"])
-        self._dot.configure(text_color=_C["green"])
         self._last_update = time.time()
 
         # Birkaç saniye sonra "dinliyor" moduna don
@@ -318,6 +341,7 @@ class Overlay(ctk.CTkToplevel):
     def _fade_to_idle(self):
         """Bir sure sonra göstergeyi bekleme rengine döndür."""
         self._dot.configure(text_color=_C["yellow"])
+        self._dir_label.configure(text="")
         self._status_label.configure(
             text=t("ready_vad"), text_color=_C["dim"]
         )

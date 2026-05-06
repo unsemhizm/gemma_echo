@@ -391,6 +391,89 @@ class Orchestrator:
                            src_name=src_name, tgt_name=tgt_name)
 
     # ═══════════════════════════════════════════════════════════
+    # INBOUND — Karsi Taraftan Gelen Sesi Cevir (TTS yok)
+    # ═══════════════════════════════════════════════════════════
+
+    def process_inbound(self, audio_path: str):
+        """
+        Karsı taraftan gelen sesi kullanicinin diline cevir.
+        TTS calmiyor — sadece Overlay'e gonderiyor.
+        Dil yonu process() ile tersinedir: target_lang -> source_lang
+        """
+        print(f"\n[INBOUND] Karsi taraf isleniyor: {audio_path}")
+        total_start = time.time()
+
+        try:
+            # Dil ayarlarini oku — process() ile ayni config ama ters yon
+            src_lang = "en"
+            tgt_lang = "tr"
+            src_name = "English"
+            tgt_name = "Turkish"
+
+            if self.config:
+                src_lang = self.config.get("language", "target", default="en")
+                tgt_lang = self.config.get("language", "source", default="tr")
+                src_name = self.config.get("language", "target_name", default="English")
+                tgt_name = self.config.get("language", "source_name", default="Turkish")
+
+            # 1. STT — karsi tarafin sesini metne cevir
+            stt_start = time.time()
+            stt_result = self.transcriber.transcribe(audio_path, source_lang=src_lang)
+
+            if stt_result.get("no_speech_prob", 0) > 0.4:
+                print("[INBOUND] Gurultu algilandi, isleme iptal.")
+                return
+
+            text_foreign = stt_result.get("text", "").strip()
+            if not text_foreign:
+                print("[INBOUND] Bos metin, isleme iptal.")
+                return
+
+            _words = text_foreign.split()
+            _has_punct = text_foreign[-1] in ".!?" if text_foreign else False
+            if len(_words) <= 2 and not _has_punct:
+                print(f"[INBOUND] Kisa metin ('{text_foreign}') — false-positive, iptal.")
+                return
+
+            stt_ms = int((time.time() - stt_start) * 1000)
+            print(f"[INBOUND] STT: {stt_ms}ms | '{text_foreign}'")
+
+            # 2. LLM — karsi tarafin metnini kullanicinin diline cevir
+            llm_result = self.translator.translate(
+                text_foreign,
+                context=[],
+                src_lang=src_lang,
+                tgt_lang=tgt_lang,
+                src_name=src_name,
+                tgt_name=tgt_name,
+            )
+            text_native = llm_result.get("translation", "")
+            llm_ms = llm_result.get("latency_ms", 0)
+
+            print(f"[INBOUND] Ceviri: '{text_native}' | {llm_ms}ms")
+
+            total_ms = int((time.time() - total_start) * 1000)
+
+            # 3. TTS YOK — overlay'e "inbound" flag'iyle gonder
+            if self.result_queue is not None:
+                self.result_queue.put({
+                    "direction":  "inbound",
+                    "text_tr":    text_native,   # cevrilen (yerli dil) metin
+                    "text_en":    text_foreign,  # orijinal (yabanci) metin
+                    "engine":     llm_result.get("engine"),
+                    "latency_ms": total_ms,
+                    "stt_ms":     stt_ms,
+                    "llm_ms":     llm_ms,
+                    "tts_ms":     0,
+                    "error":      None,
+                })
+
+        except Exception as e:
+            print(f"[INBOUND HATA] {e}")
+            if self.result_queue is not None:
+                self.result_queue.put({"error": f"[Inbound] {e}"})
+
+    # ═══════════════════════════════════════════════════════════
     # FALLBACK — Her Moddan Offline'a Guvenli Gecis
     # ═══════════════════════════════════════════════════════════
 

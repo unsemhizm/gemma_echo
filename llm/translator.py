@@ -13,51 +13,49 @@ from llama_cpp import Llama
 # Çevresel değişkenleri yükle
 load_dotenv()
 
-CULTURAL_MAP_TR_EN = {
-    "hoş geldin": "Welcome.",
-    "hoş bulduk": "Glad to be here.",
-    "görüşürüz": "See you later.",
-    "kendine iyi bak": "Take care of yourself.",
-    "sağlıcakla kal": "Stay well.",
-    "yolun açık olsun": "Safe travels.",
-    "allah'a emanet ol": "May God protect you.",
-    "hayırlı olsun": "Congratulations, best wishes.",
-    "gözün aydın": "I am so happy for your good news.",
-    "ellerine sağlık": "Well done, thank you.",
-    "çok yaşa": "Bless you.",
-    "sen de gör": "Thank you, you too.",
-    "iyi ki doğdun": "Happy birthday!",
-    "nice senelere": "Many happy returns.",
-    "helal olsun": "Bravo, well done.",
-    "sıhhatler olsun": "Enjoy your haircut/shower.",
-    "geçmiş olsun": "Get well soon.",
-    "başınız sağ olsun": "I am sorry for your loss.",
-    "allah rahmet eylesin": "May they rest in peace.",
-    "canın sağ olsun": "Don't worry about it.",
-    "üzme kendini": "Don't beat yourself up.",
-    "kısmet değilmiş": "It wasn't meant to be.",
-    "hayırlısı olsun": "Let's hope for the best.",
-    "kolay gelsin": "Good luck with your work.",
-    "afiyet olsun": "Enjoy your meal.",
-    "bereket versin": "Thanks, may it bring abundance.",
-    "ziyade olsun": "Thank you for the meal.",
-    "iyi çalışmaları": "Have a good shift/work.",
-    "eyvallah": "Thanks, alright.",
-    "estağfurullah": "Not at all / Don't mention it.",
-    "aman diyeyim": "Watch out / Be careful.",
-    "hadi canım": "No way / You're kidding.",
-    "yok artık": "Unbelievable.",
-    "ne halt ettin sen": "What have you done!",
-    "kurban olayım sana": "I would do anything for you.",
-    "allah razı olsun": "May God bless you.",
-    "allah korusun": "God forbid.",
-    "allah rahatlık versin": "Rest in peace.",
-    "elveda": "Farewell.",
-    "hoşça kal": "Goodbye."
-}
-
-CULTURAL_MAPS = {
-    ("tr", "en"): CULTURAL_MAP_TR_EN
+CULTURAL_CONCEPTS = {
+    "tr": {
+        "hoş geldin":        {"intent": "welcoming someone who has just arrived",                                          "en_default": "Welcome."},
+        "hoş bulduk":        {"intent": "responding warmly to being welcomed upon arrival",                                "en_default": "Glad to be here."},
+        "görüşürüz":         {"intent": "a casual farewell indicating you will meet again soon",                          "en_default": "See you later."},
+        "kendine iyi bak":   {"intent": "a warm farewell expressing care for someone's wellbeing",                        "en_default": "Take care."},
+        "sağlıcakla kal":    {"intent": "a farewell wishing someone to remain healthy and well",                          "en_default": "Stay well."},
+        "yolun açık olsun":  {"intent": "wishing someone safe and easy travels on their journey",                         "en_default": "Safe travels."},
+        "allah'a emanet ol": {"intent": "a farewell entrusting someone to God's protection",                              "en_default": "May God protect you."},
+        "hayırlı olsun":     {"intent": "congratulating someone or wishing them well on a new beginning or purchase",     "en_default": "Congratulations, best wishes."},
+        "gözün aydın":       {"intent": "sharing in someone's joy over good news, expressing happiness for them",         "en_default": "I am so happy for your good news."},
+        "ellerine sağlık":   {"intent": "complimenting someone on their work, craft, or food they prepared",              "en_default": "Well done, thank you."},
+        "çok yaşa":          {"intent": "blessing someone after they sneeze, wishing them long life",                     "en_default": "Bless you."},
+        "sen de gör":        {"intent": "responding to birthday wishes, hoping the same good things for the other person","en_default": "Thank you, same to you."},
+        "iyi ki doğdun":     {"intent": "celebrating someone's birthday and expressing happiness they were born",         "en_default": "Happy birthday!"},
+        "nice senelere":     {"intent": "wishing someone many more happy years, especially on birthdays or anniversaries","en_default": "Many happy returns."},
+        "helal olsun":       {"intent": "expressing admiration and giving credit for someone's achievement or effort",    "en_default": "Well deserved, bravo."},
+        "sıhhatler olsun":   {"intent": "wishing someone well after a haircut, shower, or personal grooming",            "en_default": "Enjoy your fresh look."},
+        "geçmiş olsun":      {"intent": "wishing someone a speedy recovery from illness, hardship, or misfortune",       "en_default": "Get well soon."},
+        "başınız sağ olsun": {"intent": "expressing deep condolences to someone who has lost a loved one",               "en_default": "I am so sorry for your loss."},
+        "allah rahmet eylesin": {"intent": "praying for the soul of someone who has passed away",                        "en_default": "May they rest in peace."},
+        "canın sağ olsun":   {"intent": "consoling someone over a loss, emphasizing their life and health matter most",  "en_default": "What matters is you are safe."},
+        "üzme kendini":      {"intent": "encouraging someone not to blame themselves or feel bad",                        "en_default": "Don't be so hard on yourself."},
+        "kısmet değilmiş":   {"intent": "accepting that something was not meant to be, expressing resignation with fate","en_default": "It wasn't meant to be."},
+        "hayırlısı olsun":   {"intent": "hoping for the best outcome in an uncertain situation",                         "en_default": "Let's hope for the best."},
+        "kolay gelsin":      {"intent": "wishing someone ease and success in their current work or task",                 "en_default": "Good luck with your work."},
+        "afiyet olsun":      {"intent": "wishing someone to enjoy their meal or food",                                   "en_default": "Enjoy your meal."},
+        "bereket versin":    {"intent": "wishing someone abundance, often said by a seller after receiving payment or as a blessing",  "en_default": "May it bring you abundance."},
+        "ziyade olsun":      {"intent": "thanking a host after a meal, wishing them abundance",                          "en_default": "Thank you for the meal."},
+        "iyi çalışmalar":    {"intent": "wishing someone a productive and pleasant work shift",                          "en_default": "Have a good shift."},
+        "eyvallah":          {"intent": "expressing casual gratitude or acknowledgment",                                  "en_default": "Thanks, got it."},
+        "estağfurullah":     {"intent": "humbly deflecting praise or thanks, meaning do not mention it",                 "en_default": "Not at all, don't mention it."},
+        "aman diyeyim":      {"intent": "giving a friendly warning or caution to be careful",                            "en_default": "Watch out, be careful."},
+        "hadi canım":        {"intent": "expressing disbelief or playful surprise",                                      "en_default": "No way, you are kidding."},
+        "yok artık":         {"intent": "expressing shock or disbelief at something outrageous or unexpected",           "en_default": "Unbelievable."},
+        "ne halt ettin sen": {"intent": "expressing strong disapproval or shock at something someone did wrong",         "en_default": "What have you done!"},
+        "kurban olayım sana":{"intent": "expressing deep affection and devotion to someone",                             "en_default": "I would do anything for you."},
+        "allah razı olsun":  {"intent": "expressing deep gratitude and blessing someone for their kindness",             "en_default": "May God bless you for this."},
+        "allah korusun":     {"intent": "expressing hope that something bad will not happen, similar to God forbid",     "en_default": "God forbid."},
+        "allah rahatlık versin": {"intent": "wishing someone a good night's sleep and peaceful rest",                   "en_default": "Good night, sleep well."},
+        "elveda":            {"intent": "a formal and final farewell",                                                   "en_default": "Farewell."},
+        "hoşça kal":         {"intent": "a warm goodbye",                                                                "en_default": "Goodbye."},
+    }
 }
 
 # ── Persona Şablonları (Dinamik — {tgt_lang} ile hedef dile göre uyarlanır) ──
@@ -232,13 +230,22 @@ class Translator:
 
         cultural_result, match_type = self._check_cultural(text_tr, src_lang, tgt_lang)
 
-        if match_type == "exact":
+        if match_type == "exact_fast":
             return {"translation": cultural_result, "latency_ms": 0, "engine": "CulturalMap"}
 
         hint = ""
-        if match_type == "partial":
-            tr_idiom, en_idiom = cultural_result
-            hint = f"CRITICAL RULE: Translate '{tr_idiom}' as '{en_idiom}', translate the rest naturally.\n\n"
+        if match_type == "exact_intent":
+            idiom, intent = cultural_result
+            hint = (
+                f"CULTURAL CONTEXT: The phrase '{idiom}' conveys the meaning of "
+                f"'{intent}'. Translate this naturally into {tgt_name}, matching the active style.\n\n"
+            )
+        elif match_type == "partial":
+            idiom, intent = cultural_result
+            hint = (
+                f"CULTURAL CONTEXT: The text contains '{idiom}' which conveys '{intent}'. "
+                f"Translate this expression naturally into {tgt_name} as part of the full sentence.\n\n"
+            )
 
         # Sistem promptunu guncelle
         self.system_prompt = self._build_system_prompt(src_name, tgt_name)
@@ -425,25 +432,28 @@ class Translator:
         """Removes punctuation for clean matching."""
         return text.translate(str.maketrans('', '', string.punctuation)).strip()
 
-    def _check_cultural(self, text: str, src_lang: str, tgt_lang: str) -> tuple[str | tuple[str, str] | None, str]:
+    def _check_cultural(self, text: str, src_lang: str, tgt_lang: str) -> tuple:
         fixed_text = self._tr_lower(text)
         clean_input = self._strip_punct(fixed_text)
 
-        # Dil cifti icin harita var mi?
-        cmap = CULTURAL_MAPS.get((src_lang, tgt_lang))
+        cmap = CULTURAL_CONCEPTS.get(src_lang)
         if not cmap:
             return None, "none"
 
         # Stage 1: Exact Match
-        for key, value in cmap.items():
+        for key, data in cmap.items():
             clean_key = self._strip_punct(self._tr_lower(key))
             if clean_input == clean_key:
-                return value, "exact"
+                # Fast-track: EN hedef + persona yok → LLM bypass (0ms)
+                if tgt_lang == "en" and self.persona == "none":
+                    return data["en_default"], "exact_fast"
+                # Deep-track: intent hint ile LLM'e git
+                return (key, data["intent"]), "exact_intent"
 
-        # Stage 2: Partial Match
-        for key, value in cmap.items():
+        # Stage 2: Partial Match — intent hint olarak enjekte et
+        for key, data in cmap.items():
             clean_key = self._strip_punct(self._tr_lower(key))
             if clean_key in clean_input:
-                return (key, value), "partial"
+                return (key, data["intent"]), "partial"
 
         return None, "none"

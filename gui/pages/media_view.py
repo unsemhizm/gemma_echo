@@ -23,8 +23,9 @@ class MediaView(ctk.CTkFrame):
         super().__init__(master, fg_color=_C["bg"], corner_radius=0)
         self.cfg = cfg
         self.app = app
-        self._processing = False
-        self._dubbing    = False
+        self._processing  = False
+        self._dubbing     = False
+        self._ffmpeg_proc = None
         self._build()
 
     def _build(self):
@@ -222,6 +223,9 @@ class MediaView(ctk.CTkFrame):
 
     def _cancel(self):
         self._processing = False
+        if self._ffmpeg_proc is not None:
+            self._ffmpeg_proc.terminate()
+            self._ffmpeg_proc = None
         self._set_progress(0, "Iptal edildi", _C["yellow"])
         self._btn_process.configure(state="normal")
         self._btn_cancel.configure(state="disabled")
@@ -351,27 +355,23 @@ class MediaView(ctk.CTkFrame):
         tmp.close()
         out = tmp.name
         try:
-            import ffmpeg as ff
-            (
-                ff.input(src)
-                  .output(out, ar=16000, ac=1, acodec="pcm_s16le")
-                  .overwrite_output()
-                  .run(quiet=True)
+            self._ffmpeg_proc = subprocess.Popen(
+                ["ffmpeg", "-i", src,
+                 "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                 "-y", out],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
-            return out, True
-        except Exception:
-            try:
-                r = subprocess.run(
-                    ["ffmpeg", "-i", src,
-                     "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
-                     "-y", out],
-                    capture_output=True, timeout=600
-                )
-                if r.returncode == 0:
-                    return out, True
-                self._set_progress(0, "ffmpeg hatasi", _C["red"])
-            except FileNotFoundError:
-                self._set_progress(0, "ffmpeg bulunamadi!", _C["red"])
+            self._ffmpeg_proc.wait()
+            returncode = self._ffmpeg_proc.returncode
+            self._ffmpeg_proc = None
+            if returncode == 0:
+                return out, True
+            self._set_progress(0, "ffmpeg hatasi", _C["red"])
+        except FileNotFoundError:
+            self._set_progress(0, "ffmpeg bulunamadi!", _C["red"])
+        finally:
+            self._ffmpeg_proc = None
         return None, False
 
     def _translate_chunked(self, translator, text: str) -> str:

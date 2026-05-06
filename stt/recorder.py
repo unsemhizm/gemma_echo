@@ -26,7 +26,7 @@ class Recorder:
     SAMPLE_RATE = 16000
     FRAME_DURATION_MS = 30  # webrtcvad: 10, 20 veya 30ms destekler
 
-    def __init__(self, orchestrator, aggressiveness=None, transcriber=None, config=None):
+    def __init__(self, orchestrator, aggressiveness=None, transcriber=None, config=None, device=None):
         """
         Args:
             orchestrator: Orchestrator ornegi — process() metodu cagrilir.
@@ -36,6 +36,7 @@ class Recorder:
         self.orchestrator = orchestrator
         self.transcriber = transcriber
         self.config = config
+        self.device = device  # None = varsayilan mikrofon, int = loopback device index
         
         # Ayarlari config'den veya parametreden oku
         vad_aggr = aggressiveness
@@ -105,12 +106,16 @@ class Recorder:
         silent_count = 0     # Arka arkaya sessiz kare sayisi
 
         try:
-            with sd.RawInputStream(
+            stream_kwargs = dict(
                 samplerate=self.SAMPLE_RATE,
                 channels=1,
                 dtype="int16",
-                blocksize=self.frame_size
-            ) as stream:
+                blocksize=self.frame_size,
+            )
+            if self.device is not None:
+                stream_kwargs["device"] = self.device
+
+            with sd.RawInputStream(**stream_kwargs) as stream:
 
                 while not self._stop_event.is_set():
                     raw, overflowed = stream.read(self.frame_size)
@@ -278,3 +283,175 @@ class Recorder:
         if not clean:
             return False
         return clean[-1] in ".!?"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOOPBACK RECORDER — soundcard ile WASAPI Loopback
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LoopbackRecorder:
+    """
+    WASAPI Loopback kaydedici — karsı tarafin sesini (Zoom/Meet cikisi) yakalar.
+    soundcard kutuphanesini kullanir; sounddevice ile ayni VAD + kuyruk mimarisi.
+
+    Kullanim:
+        recorder = LoopbackRecorder(orchestrator, config=cfg)
+        threading.Thread(target=recorder.run, daemon=True).start()
+        # durdurmak icin:
+        recorder._stop_event.set()
+    """
+
+    SAMPLE_RATE       = 16000
+    FRAME_DURATION_MS = 30
+    BLOCKSIZE         = 4800   # ~300ms
+
+    def __init__(self, orchestrator, config=None, aggressiveness=None, device_name: str = None):
+        """
+        Args:
+            orchestrator  : process() metodu cagrilacak nesne.
+            config        : ConfigManager — ayarlar buradan okunur.
+            aggressiveness: webrtcvad gurultu direnci (0-3).
+            device_name   : Loopback cihaz adi (None = ilk bulunan loopback).
+        """
+        self.orchestrator = orchestrator
+        self.config       = config
+        self.device_name  = device_name
+
+        vad_aggr = aggressiveness
+        if vad_aggr is None and config:
+            vad_aggr = config.get("recording", "vad_aggressiveness", default=2)
+        self.aggressiveness = vad_aggr or 2
+
+        silence_ms = 900
+        if config:
+            silence_ms = config.get("recording", "silence_ms", default=900)
+        self._silence_threshold = silence_ms // self.FRAME_DURATION_MS
+
+        self._pre_trigger_size  = 10
+        self._frame_size        = int(self.SAMPLE_RATE * self.FRAME_DURATION_MS / 1000)
+
+        self.vad              = webrtcvad.Vad(self.aggressiveness)
+        self._stop_event      = threading.Event()
+        self.audio_queue      = queue.Queue(maxsize=10)
+
+        _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._tmp_dir = os.path.join(_project_dir, ".tmp_audio")
+        os.makedirs(self._tmp_dir, exist_ok=True)
+
+    # ── Ana Dongu ─────────────────────────────────────────────────────────────
+
+    def run(self):
+        """WASAPI Loopback'ten ses yakala, VAD ile cumle algilayinca kuyruga at."""
+        try:
+            import soundcard as sc
+        except ImportError:
+            print("[LOOPBACK] HATA: 'soundcard' kutuphanesi bulunamadi. 'pip install soundcard' calistir.")
+            return
+
+        # Loopback cihazi bul
+        loopback_mics = [m for m in sc.all_microphones(include_loopback=True) if m.isloopback]
+        if not loopback_mics:
+            print("[LOOPBACK] HATA: Hicbir WASAPI Loopback cihazi bulunamadi.")
+            return
+
+        device = loopback_mics[0]
+        if self.device_name:
+            matches = [m for m in loopback_mics if self.device_name.lower() in m.name.lower()]
+            if matches:
+                device = matches[0]
+
+        print(f"\n[LOOPBACK] Cihaz: {device.name}")
+        print("[LOOPBACK] Karsi taraf dinleniyor. Ctrl+C ile dur.")
+
+        threading.Thread(target=self._consumer, daemon=True).start()
+
+        pre_trigger_buf = collections.deque(maxlen=self._pre_trigger_size)
+        voiced_frames   = []
+        triggered       = False
+        silent_count    = 0
+
+        try:
+            with device.recorder(samplerate=self.SAMPLE_RATE, channels=1,
+                                  blocksize=self.BLOCKSIZE) as rec:
+                while not self._stop_event.is_set():
+                    # soundcard float32 dondurur → int16'ya cevir
+                    data       = rec.record(numframes=self._frame_size)
+                    samples_f  = data[:, 0] if data.ndim > 1 else data
+                    samples_i  = np.clip(samples_f * 32767, -32768, 32767).astype(np.int16)
+                    frame_bytes = samples_i.tobytes()
+
+                    is_speech = self.vad.is_speech(frame_bytes, self.SAMPLE_RATE)
+
+                    if not triggered:
+                        pre_trigger_buf.append((frame_bytes, is_speech))
+                        voiced_in_buf = sum(1 for _, s in pre_trigger_buf if s)
+                        if voiced_in_buf > 0.8 * pre_trigger_buf.maxlen:
+                            triggered    = True
+                            silent_count = 0
+                            voiced_frames = [f for f, _ in pre_trigger_buf]
+                            pre_trigger_buf.clear()
+                            print("[LOOPBACK] Konusma algilandi...")
+                    else:
+                        voiced_frames.append(frame_bytes)
+                        if is_speech:
+                            silent_count = 0
+                        else:
+                            silent_count += 1
+
+                        if silent_count >= self._silence_threshold:
+                            triggered    = False
+                            silent_count = 0
+                            if voiced_frames:
+                                wav_path = self._write_wav(voiced_frames)
+                                try:
+                                    self.audio_queue.put_nowait(wav_path)
+                                except queue.Full:
+                                    print("[LOOPBACK] Kuyruk dolu, atlandi.")
+                                    try:
+                                        os.remove(wav_path)
+                                    except OSError:
+                                        pass
+                            voiced_frames = []
+                            pre_trigger_buf.clear()
+
+        except KeyboardInterrupt:
+            print("\n[LOOPBACK] Durduruldu.")
+        except Exception as e:
+            print(f"[LOOPBACK] Hata: {e}")
+
+    # ── Consumer ─────────────────────────────────────────────────────────────
+
+    def _consumer(self):
+        while True:
+            wav_path = self.audio_queue.get()
+            try:
+                self.orchestrator.process(wav_path)
+            except Exception as e:
+                print(f"[LOOPBACK] Consumer hatasi: {e}")
+            finally:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+                self.audio_queue.task_done()
+
+    # ── WAV Yazici ────────────────────────────────────────────────────────────
+
+    def _write_wav(self, frames: list) -> str:
+        ts        = int(time.time() * 1000)
+        wav_path  = os.path.join(self._tmp_dir, f"loopback_{ts}.wav")
+        audio_bytes = b"".join(frames)
+
+        samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+        rms     = np.sqrt(np.mean(samples ** 2))
+        if rms > 50:
+            gain    = min(3000.0 / rms, 10.0)
+            samples = np.clip(samples * gain, -32767, 32767)
+        audio_bytes = samples.astype(np.int16).tobytes()
+
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.SAMPLE_RATE)
+            wf.writeframes(audio_bytes)
+        return wav_path
