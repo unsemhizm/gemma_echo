@@ -100,7 +100,7 @@ class TextView(ctk.CTkFrame):
 
     def _start_mic(self):
         if not self.app._backend_ready:
-            messagebox.showinfo("Bekleyin", "Modeller henuz yukleniyor.")
+            messagebox.showinfo(t("please_wait"), t("models_loading_short"))
             return
         self._mic_recording  = True
         self._mic_stop_event = threading.Event()
@@ -147,8 +147,9 @@ class TextView(ctk.CTkFrame):
 
         # Tanıma aşaması
         self.after(0, lambda: self._btn_mic.configure(
-            text="\U0001f504  Taniniyor...", fg_color=_C["yellow"],
-            hover_color=_C["yellow"], state="disabled"
+            text=f"\U0001f504  {t('recognizing')}",
+            fg_color=_C["yellow"],
+            hover_color=_C["yellow"], state="disabled",
         ))
         self.after(0, lambda: self._mic_lbl.configure(
             text=t("processing"), text_color=_C["yellow"]
@@ -163,7 +164,8 @@ class TextView(ctk.CTkFrame):
                     self._in.delete("0.0", "end")
                     self._in.insert("0.0", text)
                     self._mic_lbl.configure(
-                        text=f"{len(text.split())} kelime tanindi", text_color=_C["green"]
+                        text=t("words_recognized", len(text.split())),
+                        text_color=_C["green"],
                     )
                 else:
                     self._mic_lbl.configure(
@@ -171,8 +173,8 @@ class TextView(ctk.CTkFrame):
                     )
             self.after(0, _insert)
         except Exception as e:
-            self.after(0, lambda: self._mic_lbl.configure(
-                text=f"Hata: {e}", text_color=_C["red"]
+            self.after(0, lambda err=e: self._mic_lbl.configure(
+                text=f"{t('error')}: {err}", text_color=_C["red"]
             ))
         finally:
             try:
@@ -207,7 +209,7 @@ class TextView(ctk.CTkFrame):
                 en = result.get("translation", "")
                 self.after(0, lambda: self._set_out(en))
             except Exception as e:
-                self.after(0, lambda: self._set_out(f"Hata: {e}"))
+                self.after(0, lambda err=e: self._set_out(f"{t('error')}: {err}"))
             finally:
                 self.after(0, lambda: self._btn_tr.configure(state="normal"))
 

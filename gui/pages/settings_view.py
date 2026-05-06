@@ -9,6 +9,17 @@ from gui.i18n import t
 from gui.pages._helpers import _C, _header, _card, _InfoIcon
 
 class SettingsView(ctk.CTkFrame):
+    _LANG_OPTIONS = [
+        ("tr", "Turkish",  "Türkçe"),
+        ("en", "English",  "English"),
+        ("de", "German",   "Deutsch"),
+        ("fr", "French",   "Français"),
+        ("it", "Italian",  "Italiano"),
+        ("ar", "Arabic",   "العربية"),
+        ("es", "Spanish",  "Español"),
+        ("ja", "Japanese", "日本語"),
+    ]
+
     _MODES = [
         ("interactive",      "mode_interactive"),
         ("interactive_hq",   "mode_interactive_hq"),
@@ -302,6 +313,45 @@ class SettingsView(ctk.CTkFrame):
         )
         self._persona_combo.set(persona_vals[cur_persona_idx])
         self._persona_combo.pack(fill="x")
+
+        # ── Çeviri Dili ───────────────────────────────────────────────
+        lang_card = _card(body, t("translation_language") if "translation_language" in dir() else "Çeviri Dili")
+
+        lang_names = [f"{o[2]}  ({o[1]})" for o in self._LANG_OPTIONS]
+
+        src_row = ctk.CTkFrame(lang_card, fg_color="transparent")
+        src_row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            src_row, text="Kaynak Dil:", width=100,
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+        cur_src = self.cfg.get("language", "source", default="tr")
+        cur_src_idx = next((i for i, o in enumerate(self._LANG_OPTIONS) if o[0] == cur_src), 0)
+        self._src_lang_combo = ctk.CTkComboBox(
+            src_row, values=lang_names,
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=lambda v: self._on_lang_change("source", v)
+        )
+        self._src_lang_combo.set(lang_names[cur_src_idx])
+        self._src_lang_combo.pack(side="left", fill="x", expand=True)
+
+        tgt_row = ctk.CTkFrame(lang_card, fg_color="transparent")
+        tgt_row.pack(fill="x")
+        ctk.CTkLabel(
+            tgt_row, text="Hedef Dil:", width=100,
+            font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
+        ).pack(side="left")
+        cur_tgt = self.cfg.get("language", "target", default="en")
+        cur_tgt_idx = next((i for i, o in enumerate(self._LANG_OPTIONS) if o[0] == cur_tgt), 1)
+        self._tgt_lang_combo = ctk.CTkComboBox(
+            tgt_row, values=lang_names,
+            height=34, corner_radius=10, font=ctk.CTkFont(size=11),
+            fg_color=_C["surface2"], border_color=_C["border"],
+            command=lambda v: self._on_lang_change("target", v)
+        )
+        self._tgt_lang_combo.set(lang_names[cur_tgt_idx])
+        self._tgt_lang_combo.pack(side="left", fill="x", expand=True)
 
         # ── Ses Cihazlari ─────────────────────────────────────────────
         dev_card = _card(body, "Ses Cihazlari")
@@ -608,6 +658,20 @@ class SettingsView(ctk.CTkFrame):
         # Canlı güncelleme: orkestra hazırsa anında translator'a bildir
         if self.app._orchestrator:
             self.app._orchestrator.translator.set_persona(key)
+
+    def _on_lang_change(self, direction: str, display: str):
+        """Kaynak veya hedef çeviri dilini değiştirir."""
+        opt = next((o for o in self._LANG_OPTIONS if f"{o[2]}  ({o[1]})" == display), None)
+        if not opt:
+            return
+        code, name = opt[0], opt[1]
+        if direction == "source":
+            self.cfg.set("language", "source", code)
+            self.cfg.set("language", "source_name", name)
+        else:
+            self.cfg.set("language", "target", code)
+            self.cfg.set("language", "target_name", name)
+        self.cfg.save()
 
     def _on_ui_lang(self, lang: str):
         from gui.i18n import set_language

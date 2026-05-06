@@ -17,6 +17,10 @@ _LANGS = [
     ("German",   "de"),
     ("Spanish",  "es"),
     ("French",   "fr"),
+    ("Italian",  "it"),
+    ("Spanish",  "es"),
+    ("Arabic",   "ar"),
+    ("Japanese", "ja"),
 ]
 _LANG_NAMES = [l[0] for l in _LANGS]
 _DOC_EXT     = {".txt", ".pdf", ".docx"}

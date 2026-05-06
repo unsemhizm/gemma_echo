@@ -366,7 +366,7 @@ class Orchestrator:
             self.history = self.history[-3:]
 
             # 3. TTS (Sentez)
-            tts_ms = self.synthesizer.speak(text_en) or 0
+            tts_ms = self.synthesizer.speak(text_en, language=tgt_lang) or 0
 
             total_ms = int((time.time() - total_start) * 1000)
             print(f"[ORCHESTRATOR] Islem tamamlandi. E2E: {total_ms}ms (STT:{stt_ms} + LLM:{llm_ms} + TTS:{tts_ms})")

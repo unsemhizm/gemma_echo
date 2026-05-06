@@ -168,11 +168,11 @@ class MediaView(ctk.CTkFrame):
         path = filedialog.askopenfilename(
             title=t("browse"),
             filetypes=[
-                ("Tum medya",    "*.wav *.mp3 *.ogg *.flac *.m4a *.aac "
-                                  "*.mp4 *.mkv *.avi *.mov *.webm"),
-                ("Ses",          "*.wav *.mp3 *.ogg *.flac *.m4a *.aac"),
-                ("Video",        "*.mp4 *.mkv *.avi *.mov *.webm *.ts"),
-                ("Tum dosyalar", "*.*"),
+                (t("media_filetypes_all"), "*.wav *.mp3 *.ogg *.flac *.m4a *.aac "
+                                           "*.mp4 *.mkv *.avi *.mov *.webm"),
+                (t("media_filetypes_audio"), "*.wav *.mp3 *.ogg *.flac *.m4a *.aac"),
+                (t("media_filetypes_video"), "*.mp4 *.mkv *.avi *.mov *.webm *.ts"),
+                (t("media_filetypes_any"), "*.*"),
             ]
         )
         if path:
@@ -226,7 +226,7 @@ class MediaView(ctk.CTkFrame):
         if self._ffmpeg_proc is not None:
             self._ffmpeg_proc.terminate()
             self._ffmpeg_proc = None
-        self._set_progress(0, "Iptal edildi", _C["yellow"])
+        self._set_progress(0, t("cancelled"), _C["yellow"])
         self._btn_process.configure(state="normal")
         self._btn_cancel.configure(state="disabled")
 
@@ -237,10 +237,12 @@ class MediaView(ctk.CTkFrame):
             return
         path = self._file_entry.get().strip()
         if not path or not os.path.exists(path):
-            messagebox.showwarning("Dosya Yok", "Lutfen once bir video dosyasi secin.")
+            messagebox.showwarning(t("media_no_file"), t("media_select_av_first"))
             return
         if os.path.splitext(path)[1].lower() not in _VIDEO_EXT | _AUDIO_EXT:
-            messagebox.showwarning("Desteklenmiyor", "Desteklenen format: mp4, mkv, avi, mov ...")
+            messagebox.showwarning(
+                t("media_unsupported_short"), t("media_supported_formats_hint")
+            )
             return
         if not self.app._backend_ready:
             messagebox.showinfo(
@@ -277,7 +279,7 @@ class MediaView(ctk.CTkFrame):
         try:
             dubber.process(src, output_path, progress_cb=on_progress)
             self.after(0, lambda: self._elapsed.configure(
-                text=f"Cikti: {os.path.basename(output_path)}",
+                text=t("output_path", os.path.basename(output_path)),
                 text_color=_C["green"]
             ))
         except Exception as e:
@@ -333,11 +335,11 @@ class MediaView(ctk.CTkFrame):
             elapsed = time.time() - t0
             self._set_progress(1.0, t("done_tick"), _C["green"])
             self.after(0, lambda: self._elapsed.configure(
-                text=f"Sure: {elapsed:.1f}s", text_color=_C["dim"]
+                text=t("elapsed_seconds", f"{elapsed:.1f}"), text_color=_C["dim"]
             ))
 
         except Exception as e:
-            self._set_progress(0, f"Hata: {e}", _C["red"])
+            self._set_progress(0, f"{t('error')}: {e}", _C["red"])
         finally:
             if owns and wav and os.path.exists(wav):
                 try:
@@ -367,9 +369,9 @@ class MediaView(ctk.CTkFrame):
             self._ffmpeg_proc = None
             if returncode == 0:
                 return out, True
-            self._set_progress(0, "ffmpeg hatasi", _C["red"])
+            self._set_progress(0, t("ffmpeg_error"), _C["red"])
         except FileNotFoundError:
-            self._set_progress(0, "ffmpeg bulunamadi!", _C["red"])
+            self._set_progress(0, t("ffmpeg_not_found"), _C["red"])
         finally:
             self._ffmpeg_proc = None
         return None, False
@@ -403,17 +405,23 @@ class MediaView(ctk.CTkFrame):
         box  = self._tr_box if lang == "tr" else self._en_box
         text = box.get("0.0", "end").strip()
         if not text:
-            messagebox.showinfo("Bos", "Kaydedilecek metin yok.")
+            messagebox.showinfo(t("save_empty_title"), t("save_empty_message"))
             return
         src  = self._file_entry.get().strip()
-        base = os.path.splitext(os.path.basename(src))[0] if src else "cikti"
+        base = os.path.splitext(os.path.basename(src))[0] if src else "output"
+        save_title = (
+            t("save_as_transcript") if lang == "tr" else t("save_as_translation")
+        )
         path = filedialog.asksaveasfilename(
-            title=f"{'Transkripti' if lang == 'tr' else 'Ceviriyi'} Kaydet",
+            title=save_title,
             initialfile=f"{base}_{lang}.txt",
             initialdir=self.cfg.get("file_mode", "output_dir",
                                     default=os.path.expanduser("~")),
             defaultextension=".txt",
-            filetypes=[("Metin", "*.txt"), ("Hepsi", "*.*")]
+            filetypes=[
+                (t("filetype_text"), "*.txt"),
+                (t("filetype_all"), "*.*"),
+            ],
         )
         if path:
             with open(path, "w", encoding="utf-8") as f:

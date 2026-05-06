@@ -203,10 +203,11 @@ class Synthesizer:
     # ANA SENTEZ METODU (Yonlendirici)
     # ═══════════════════════════════════════════════════════════
 
-    def speak(self, text: str):
+    def speak(self, text: str, language: str = "en"):
         """
         Metni sese donusturur ve calar.
         Aktif moda gore uygun motora yonlendirir.
+        language: XTTS dil kodu (en, tr, ar, es, ja, ...)
         """
         if not text or len(text.strip()) == 0:
             return
@@ -214,8 +215,8 @@ class Synthesizer:
         if self.mode == "online":
             return self.speak_online(text)
         elif self.mode == "gpu":
-            return self.speak_offline(text, expect_gpu=True)
-        return self.speak_offline(text, expect_gpu=False)
+            return self.speak_offline(text, expect_gpu=True, language=language)
+        return self.speak_offline(text, expect_gpu=False, language=language)
 
     def set_output_device(self, device_index: Optional[int]):
         """None = varsayılan hoparlör, int = sounddevice cihaz indexi"""
@@ -257,7 +258,7 @@ class Synthesizer:
     # OFFLINE / GPU SENTEZ — XTTS-v2 (Ses Klonlama Destekli)
     # ═══════════════════════════════════════════════════════════
 
-    def speak_offline(self, text: str, expect_gpu: bool = False):
+    def speak_offline(self, text: str, expect_gpu: bool = False, language: str = "en"):
         """
         XTTS-v2 ile yerel sentez yapar.
         expect_gpu=True  -> GPU'da olmasi beklenir (hybrid_plus)
@@ -291,7 +292,7 @@ class Synthesizer:
 
             self.xtts_model.tts_to_file(
                 text=text,
-                language="en",
+                language=language,
                 file_path=output_file,
                 speaker_wav=self.speaker_wav_path
             )
