@@ -1,7 +1,6 @@
 import os
 import time
 from dotenv import load_dotenv
-from groq import Groq
 from google import genai
 from google.genai import types
 
@@ -9,8 +8,8 @@ from google.genai import types
 load_dotenv()
 
 def test_apis():
-    print("[TEST] 3 Katmanlı Turbo Mimari Kontrol Ediliyor...\n")
-    print("Hedef: Groq ile < 500ms hıza ulaşmak.\n" + "="*50)
+    print("[TEST] 2 Katmanlı Gemini Mimari Kontrol Ediliyor...\n")
+    print("="*50)
 
     # ---------------------------------------------------------
     # 1. BİRİNCİL MOTOR (ÇEVİRİDE 1. KATMAN): GEMINI API (GEMMA 4)
@@ -64,38 +63,6 @@ def test_apis():
         except Exception as e:
             print(f"[HATA] GEMINI BAĞLANTI HATASI: {e}")
 
-    print("-" * 50)
-
-    # ---------------------------------------------------------
-    # 3. ÜÇÜNCÜL MOTOR (GÜVENLİK YEDEĞİ): GROQ
-    # ---------------------------------------------------------
-    groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        print("[HATA] GROQ_API_KEY .env dosyasında bulunamadı!")
-    else:
-        try:
-            print("[BEKLEYİN] 3. KATMAN: Groq (Llama 3.1 8B) test ediliyor...")
-            from groq import Groq
-            client = Groq(api_key=groq_key.strip())
-            start_time = time.time()
-            
-            response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": "Say 'Hello' and nothing else."}],
-                temperature=0.1,
-                max_tokens=10
-            )
-            
-            latency = (time.time() - start_time) * 1000
-            print(f"[BAŞARILI] GROQ! Cevap: '{response.choices[0].message.content.strip()}'")
-            print(f"[SÜRE] Groq Gecikmesi: {latency:.2f} ms")
-            if latency < 500:
-                print("[HEDEF] VURULDU: 500ms'nin altındayız!")
-            else:
-                print("[UYARI] Hedefin biraz üstündeyiz, ağ gecikmesi olabilir.")
-        except Exception as e:
-            print(f"[HATA] GROQ BAĞLANTI HATASI: {e}")
-            
     print("=" * 50)
 
 if __name__ == "__main__":

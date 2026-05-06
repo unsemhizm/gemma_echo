@@ -3,6 +3,7 @@
 
 import os
 import time
+from typing import Optional
 import shutil
 import wave
 import threading
@@ -216,7 +217,7 @@ class Synthesizer:
             return self.speak_offline(text, expect_gpu=True)
         return self.speak_offline(text, expect_gpu=False)
 
-    def set_output_device(self, device_index: int or None):
+    def set_output_device(self, device_index: Optional[int]):
         """None = varsayılan hoparlör, int = sounddevice cihaz indexi"""
         self.output_device = device_index
         print(f"[TTS] Çıkış cihazı ayarlandı: {device_index if device_index is not None else 'Varsayılan'}")

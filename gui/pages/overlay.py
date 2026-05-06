@@ -327,7 +327,7 @@ class Overlay(ctk.CTkToplevel):
         if self._fade_job:
             try:
                 self.after_cancel(self._fade_job)
-            except:
+            except Exception:
                 pass
             self._fade_job = None
         self._fade_job = self.after(FADE_MS, self._fade_to_idle)
