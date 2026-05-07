@@ -104,6 +104,12 @@ class Orchestrator:
 
         print("[SISTEM] Isitma tamamlandi.")
 
+    def _handle_llm_vram_failure(self):
+        """Yerel GGUF VRAM'e sigmadi; ceviriyi bulut motoruna kaydir (API zaten zorunlu)."""
+        print("[SISTEM] Yerel LLM yuklenemedi (VRAM). Ceviri motoru buluta kaydiriliyor.")
+        self.translator.set_mode("online")
+        self.translator.unload_local_model()
+
     # ═══════════════════════════════════════════════════════════
     # MOD YONETIMI — VRAM GUVENLIK MATRISLI
     # ═══════════════════════════════════════════════════════════
@@ -214,7 +220,8 @@ class Orchestrator:
         """
         self.transcriber.set_mode("local_gpu")
         self.translator.set_mode("offline")
-        self.translator.load_local_model()
+        if not self.translator.load_local_model():
+            self._handle_llm_vram_failure()
         self.synthesizer.set_mode("gpu")
 
         if self.synthesizer.xtts_model is None:
@@ -276,7 +283,8 @@ class Orchestrator:
         # 3. LLM
         self.translator.set_mode(llm_backend)
         if llm_backend == "offline":
-            self.translator.load_local_model()
+            if not self.translator.load_local_model():
+                self._handle_llm_vram_failure()
         else:
             self.translator.unload_local_model()
 
@@ -497,8 +505,8 @@ class Orchestrator:
             text_tr = stt_result.get("text", "")
 
             if text_tr:
-                # Yerel model lazily VRAM'e yukle (online moddan geliyorsa yuklu olmayabilir)
-                self.translator.load_local_model()
+                if not self.translator.load_local_model():
+                    self._handle_llm_vram_failure()
                 llm_result = self.translator.translate(
                     text_tr, 
                     src_lang=src_lang, 

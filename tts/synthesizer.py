@@ -151,6 +151,18 @@ class Synthesizer:
         # ─── CIKIS AYARLARI ─────────────────────────────────────
         self.output_device = None  # None = Varsayılan, int = Cihaz indexi
 
+        self.vram_issue_callback = None  # GUI uyarısı: () -> None
+        self._xtts_gpu_vram_failed = False
+
+    def _invoke_vram_callback(self):
+        cb = self.vram_issue_callback
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            pass
+
     # ═══════════════════════════════════════════════════════════
     # BACKGROUND PRELOAD — XTTS PUSU MODU
     # ═══════════════════════════════════════════════════════════
@@ -170,7 +182,10 @@ class Synthesizer:
         def _load_in_background():
             try:
                 print(f"[SISTEM] XTTS-v2 arka planda yukleniyor ({target_str})...")
-                self._load_xtts_model(use_gpu=use_gpu)
+                if not self._load_xtts_model(use_gpu=use_gpu):
+                    self._xtts_loading = False
+                    self._xtts_ready.set()
+                    return
                 self._xtts_ready.set()
                 print(f"[SISTEM] XTTS-v2 pusuya yatti ({target_str})! Gecis aninda hazir.")
             except Exception as e:
@@ -196,6 +211,8 @@ class Synthesizer:
             raise ValueError(f"Gecersiz TTS modu: {mode}. Gecerli: {self.VALID_MODES}")
 
         old_mode = self.mode
+        if mode == "gpu":
+            self._xtts_gpu_vram_failed = False
         self.mode = mode
         print(f"[SISTEM] Synthesizer modu degisti: {old_mode} -> {mode}")
 
@@ -273,11 +290,17 @@ class Synthesizer:
 
         # Model hazir degilse yukle veya bekle
         if self.xtts_model is None:
+            if expect_gpu and self._xtts_gpu_vram_failed:
+                print("[SISTEM] XTTS GPU daha once basarisiz; ElevenLabs kullaniliyor.")
+                return self.speak_online(text)
             if self._xtts_loading:
                 print("[SISTEM] XTTS arka planda yukleniyor, bekleniyor...")
                 self._xtts_ready.wait()
             else:
-                self._load_xtts_model(use_gpu=expect_gpu)
+                if not self._load_xtts_model(use_gpu=expect_gpu):
+                    if expect_gpu and self._xtts_gpu_vram_failed:
+                        return self.speak_online(text)
+                    return 0
 
         # Model yuklendi ama yanlis cihazda olabilir
         if expect_gpu and not self._xtts_on_gpu:
@@ -286,6 +309,9 @@ class Synthesizer:
         elif not expect_gpu and self._xtts_on_gpu:
             print("[SISTEM] XTTS GPU'da ama CPU isteniyor, CPU'ya tasiniyor...")
             self._reload_xtts_on_device(use_gpu=False)
+
+        if self.xtts_model is None and expect_gpu and self._xtts_gpu_vram_failed:
+            return self.speak_online(text)
 
         try:
             output_file = os.path.join(self._project_dir, "offline_output.wav")
@@ -313,11 +339,31 @@ class Synthesizer:
     # XTTS MODEL YUKLEME / BOSALTMA
     # ═══════════════════════════════════════════════════════════
 
-    def _load_xtts_model(self, use_gpu=False):
-        """XTTS-v2 modelini yukler. use_gpu=True ise VRAM'e yukler."""
+    def _load_xtts_model(self, use_gpu=False) -> bool:
+        """XTTS-v2 modelini yukler. use_gpu=True ise VRAM'e yukler.
+        Basarisiz GPU yuklemesinde False."""
         device_str = "GPU" if use_gpu else "CPU"
         print(f"[SISTEM] XTTS-v2 modeli yukleniyor ({device_str}, 20-40sn surebilir)...")
         load_start = time.time()
+
+        if use_gpu:
+            from gpu_memory import (
+                MIN_FREE_BYTES_XTTS_GPU,
+                cleanup_cuda_memory,
+                is_cuda_oom_error,
+                vram_sufficient_for_xtts_gpu,
+            )
+
+            ok, free = vram_sufficient_for_xtts_gpu()
+            if not ok:
+                print(
+                    f"[UYARI] XTTS GPU VRAM on kontrolu basarisiz "
+                    f"(bos: {free} B, esik: {MIN_FREE_BYTES_XTTS_GPU} B)"
+                )
+                self._xtts_gpu_vram_failed = True
+                cleanup_cuda_memory()
+                self._invoke_vram_callback()
+                return False
 
         # torch.load weights_only patch
         import torch
@@ -333,12 +379,28 @@ class Synthesizer:
             _apply_torchaudio_patch()
             self._torchaudio_patched = True
 
-        from TTS.api import TTS
-        self.xtts_model = TTS(self.xtts_model_path, gpu=use_gpu)
-        self._xtts_on_gpu = use_gpu
+        try:
+            from TTS.api import TTS
+            self.xtts_model = TTS(self.xtts_model_path, gpu=use_gpu)
+            self._xtts_on_gpu = use_gpu
+            if use_gpu:
+                self._xtts_gpu_vram_failed = False
+        except Exception as e:
+            self.xtts_model = None
+            self._xtts_on_gpu = False
+            from gpu_memory import cleanup_cuda_memory, is_cuda_oom_error
+
+            cleanup_cuda_memory()
+            if use_gpu and is_cuda_oom_error(e):
+                print(f"[UYARI] XTTS GPU CUDA OOM: {e}")
+                self._xtts_gpu_vram_failed = True
+                self._invoke_vram_callback()
+                return False
+            raise
 
         load_time = time.time() - load_start
         print(f"[SISTEM] XTTS-v2 modeli yuklendi ({device_str})! Sure: {load_time:.1f}sn")
+        return True
 
     def _reload_xtts_on_device(self, use_gpu=False):
         """XTTS modelini baska bir cihaza tasinir (GPU<->CPU)."""
@@ -364,6 +426,7 @@ class Synthesizer:
                 print("[SISTEM] XTTS-v2 GPU VRAM bosaltildi.")
             else:
                 print("[SISTEM] XTTS-v2 sistem RAM'den silindi.")
+            self._xtts_gpu_vram_failed = False
 
     def offload_xtts_from_gpu(self):
         """XTTS'i GPU'dan bosalt. Geriye donuk uyumluluk icin wrapper."""

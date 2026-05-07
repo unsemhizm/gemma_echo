@@ -27,9 +27,10 @@ class TextView(ctk.CTkFrame):
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
         # ── Giris ─────────────────────────────────────────────────────
-        in_card = _card(body, t("source_text"))
+        self._in_card = _card(body, "")
+        self._in_title_lbl = self._in_card.master.winfo_children()[0]
         self._in = ctk.CTkTextbox(
-            in_card, height=130,
+            self._in_card, height=130,
             font=ctk.CTkFont(size=13),
             fg_color=_C["surface2"], border_color=_C["border"], border_width=1,
             text_color=_C["text"], wrap="word", corner_radius=10
@@ -37,7 +38,7 @@ class TextView(ctk.CTkFrame):
         self._in.pack(fill="x")
 
         # Butonlar
-        br = ctk.CTkFrame(in_card, fg_color="transparent")
+        br = ctk.CTkFrame(self._in_card, fg_color="transparent")
         br.pack(fill="x", pady=(10, 0))
 
         self._btn_tr = ctk.CTkButton(
@@ -71,9 +72,10 @@ class TextView(ctk.CTkFrame):
         self._mic_lbl.pack(side="left", padx=(10, 0))
 
         # ── Cikis ─────────────────────────────────────────────────────
-        out_card = _card(body, t("target_text"))
+        self._out_card = _card(body, "")
+        self._out_title_lbl = self._out_card.master.winfo_children()[0]
         self._out = ctk.CTkTextbox(
-            out_card, height=130,
+            self._out_card, height=130,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=_C["surface2"], border_color=_C["border"], border_width=1,
             text_color=_C["blue"], wrap="word", corner_radius=10,
@@ -83,11 +85,13 @@ class TextView(ctk.CTkFrame):
 
         # Kopyala butonu
         ctk.CTkButton(
-            out_card, text=t("copy"), height=32, width=90,
+            self._out_card, text=t("copy"), height=32, width=90,
             fg_color=_C["surface2"], hover_color=_C["border"],
             corner_radius=8, font=ctk.CTkFont(size=10),
             command=self._copy
         ).pack(anchor="e", pady=(8, 0))
+
+        self._update_language_labels()
 
     # ── Mikrofon ──────────────────────────────────────────────────────────────
 
@@ -156,7 +160,8 @@ class TextView(ctk.CTkFrame):
         ))
 
         try:
-            result = self.app._orchestrator.transcriber.transcribe(wav_path)
+            src_lang = self.cfg.get("language", "source", default="tr")
+            result = self.app._orchestrator.transcriber.transcribe(wav_path, source_lang=src_lang)
             text   = result.get("text", "").strip()
 
             def _insert():
@@ -203,9 +208,20 @@ class TextView(ctk.CTkFrame):
         self._set_out(t("translating"))
         self._btn_tr.configure(state="disabled")
 
+        src_lang = self.cfg.get("language", "source", default="tr")
+        tgt_lang = self.cfg.get("language", "target", default="en")
+        src_name = self.cfg.get("language", "source_name", default="Turkish")
+        tgt_name = self.cfg.get("language", "target_name", default="English")
+
         def _run():
             try:
-                result = self.app._orchestrator.translator.translate(text)
+                result = self.app._orchestrator.translator.translate(
+                    text,
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    src_name=src_name,
+                    tgt_name=tgt_name
+                )
                 en = result.get("translation", "")
                 self.after(0, lambda: self._set_out(en))
             except Exception as e:
@@ -214,6 +230,32 @@ class TextView(ctk.CTkFrame):
                 self.after(0, lambda: self._btn_tr.configure(state="normal"))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _update_language_labels(self):
+        from gui.i18n import get_language
+        src_name = self.cfg.get("language", "source_name", default="Turkish")
+        tgt_name = self.cfg.get("language", "target_name", default="English")
+        
+        lang_map_tr = {
+            "Turkish": "Türkçe",
+            "English": "İngilizce",
+            "German": "Almanca",
+            "French": "Fransızca",
+            "Italian": "İtalyanca",
+            "Spanish": "İspanyolca",
+            "Arabic": "Arapça",
+            "Japanese": "Japonca"
+        }
+        
+        ui_lang = get_language()
+        src_disp = lang_map_tr.get(src_name, src_name) if ui_lang == "tr" else src_name
+        tgt_disp = lang_map_tr.get(tgt_name, tgt_name) if ui_lang == "tr" else tgt_name
+        
+        in_label_text = f"KAYNAK METİN ({src_disp.upper()})" if ui_lang == "tr" else f"SOURCE TEXT ({src_disp.upper()})"
+        out_label_text = f"HEDEF METİN ({tgt_disp.upper()})" if ui_lang == "tr" else f"TARGET TEXT ({tgt_disp.upper()})"
+        
+        self._in_title_lbl.configure(text=in_label_text)
+        self._out_title_lbl.configure(text=out_label_text)
 
     def _set_out(self, text: str):
         self._out.configure(state="normal")

@@ -81,7 +81,11 @@ class DubbingPipeline:
             # ── 3. Yerel Gemma 4 Q4 ile ceviri ────────────────────────
             if self.translator.local_llm is None:
                 prog(0.24, "Yerel Gemma 4 yukleniyor (30-60sn)...", "#f5a623")
-                self.translator.load_local_model()
+                if not self.translator.load_local_model():
+                    raise RuntimeError(
+                        "Yerel Gemma yuklenemedi (VRAM). "
+                        "Ayarlar'dan LLM'i online yapin veya daha dusuk VRAM profili secin."
+                    )
 
             translated = []
             total = len(segments)
@@ -220,8 +224,12 @@ class DubbingPipeline:
         if self.synthesizer.xtts_model is None:
             if self.synthesizer._xtts_loading:
                 self.synthesizer._xtts_ready.wait()
-            else:
-                self.synthesizer._load_xtts_model(use_gpu=True)
+            elif not self.synthesizer._load_xtts_model(use_gpu=True):
+                raise RuntimeError(
+                    "XTTS GPU yuklenemedi (VRAM). Dublaj icin yeterli VRAM gerekir."
+                )
+        if self.synthesizer.xtts_model is None:
+            raise RuntimeError("XTTS modeli yuklenemedi.")
 
     def _get_speaker_latents(self, ref_wav: str):
         """Referans sesten speaker kondisyonlama latent'ini hesaplar (bir kez)."""

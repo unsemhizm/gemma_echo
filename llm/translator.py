@@ -84,6 +84,8 @@ class Translator:
 
         self.local_model_path = "./models/gemma-4-q4.gguf"
         self.local_llm = None  # lazy load: load_local_model() ile yüklenir
+        self._llm_vram_failed = False
+        self.vram_issue_callback = None  # GUI uyarısı: () -> None
 
         # Aktif persona ("none" | "official" | "streamer" | "casual" | "literary")
         self.persona = "none"
@@ -115,34 +117,80 @@ class Translator:
     # YEREL MODEL YONETIMI — Lazy Load / Unload
     # ═══════════════════════════════════════════════════════════
 
-    def load_local_model(self):
-        """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
-        Zaten yüklüyse tekrar yüklemez (idempotent)."""
-        if self.local_llm is not None:
+    def _invoke_vram_callback(self):
+        cb = self.vram_issue_callback
+        if cb is None:
             return
+        try:
+            cb()
+        except Exception:
+            pass
+
+    def load_local_model(self) -> bool:
+        """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
+        Zaten yüklüyse tekrar yüklemez (idempotent).
+        Dönüş: başarı True; VRAM / OOM durumunda False."""
+        if self.local_llm is not None:
+            return True
+        if self._llm_vram_failed:
+            return False
+
+        from gpu_memory import (
+            MIN_FREE_BYTES_LOCAL_LLM,
+            cleanup_cuda_memory,
+            is_cuda_oom_error,
+            vram_sufficient_for_llm,
+        )
+
+        ok, free = vram_sufficient_for_llm()
+        if not ok:
+            print(
+                f"[UYARI] Yerel LLM VRAM on kontrolu basarisiz "
+                f"(bos: {free} B, esik: {MIN_FREE_BYTES_LOCAL_LLM} B)"
+            )
+            self._llm_vram_failed = True
+            cleanup_cuda_memory()
+            self._invoke_vram_callback()
+            return False
 
         print(f"[SISTEM] Yerel LLM yukleniyor: {self.local_model_path}")
         start = time.time()
-        self.local_llm = Llama(
-            model_path=self.local_model_path,
-            n_gpu_layers=-1,   # Tum katmanlari GPU'ya yukle (-1 = tam GPU)
-            n_ctx=512,
-            verbose=False
-        )
+        try:
+            self.local_llm = Llama(
+                model_path=self.local_model_path,
+                n_gpu_layers=-1,
+                n_ctx=512,
+                verbose=False,
+            )
+        except Exception as e:
+            self.local_llm = None
+            cleanup_cuda_memory()
+            if is_cuda_oom_error(e):
+                print(f"[UYARI] Yerel LLM CUDA OOM: {e}")
+                self._llm_vram_failed = True
+                self._invoke_vram_callback()
+                return False
+            raise
+
+        self._llm_vram_failed = False
         elapsed = int((time.time() - start) * 1000)
         print(f"[SISTEM] Yerel LLM hazir ({elapsed}ms).")
+        return True
 
     def unload_local_model(self):
         """Yerel modeli bellekten ve VRAM'den tamamen bosaltir.
         Online moda geciste cagrilir — VRAM catismasini onler."""
         if self.local_llm is None:
+            self._llm_vram_failed = False
             return
 
         print("[SISTEM] Yerel LLM VRAM'den bosaltilyior...")
         del self.local_llm
         self.local_llm = None
+        self._llm_vram_failed = False
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print("[SISTEM] Yerel LLM VRAM'den bosaltildi.")
 
     # ═══════════════════════════════════════════════════════════
@@ -160,6 +208,8 @@ class Translator:
 
         old_mode = self.mode
         self.mode = mode
+        if mode == "offline":
+            self._llm_vram_failed = False
         print(f"[SİSTEM] Translator modu değişti: {old_mode} -> {mode}")
 
     # ═══════════════════════════════════════════════════════════
@@ -309,9 +359,11 @@ class Translator:
         Yerel GGUF modeli üzerinden çeviri yapar.
         İnternet gerektirmez. Model lazy load ile VRAM'e alınır.
         """
-        # Güvenlik: model yüklü değilse yükle (doğrudan offline moda girilince)
         if self.local_llm is None:
-            self.load_local_model()
+            if self._llm_vram_failed:
+                return self.translate_online(text_tr, context, hint)
+            if not self.load_local_model():
+                return self.translate_online(text_tr, context, hint)
 
         user_message = self._build_user_message(text_tr, context, hint)
         start_time = time.time()

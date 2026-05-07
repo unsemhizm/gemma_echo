@@ -160,6 +160,8 @@ class LiveView(ctk.CTkFrame):
     def _stop(self):
         self.app.stop_live()
         self.app.stop_inbound()
+        self.app._ptt_mode = None
+        self.app._sync_ptt_hotkeys_state()
         self._recording = False
         self._btn_start.configure(state="normal", fg_color=_C["green"])
         self._btn_stop.configure(

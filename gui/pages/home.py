@@ -161,6 +161,9 @@ class HomeWindow(ctk.CTk):
         if self.app._recorder is not None:
             # Zaten çalışıyor — durdur
             self.app.stop_live()
+            self.app.stop_inbound()
+            self.app._ptt_mode = None
+            self.app._sync_ptt_hotkeys_state()
             self._live_btn.set_active(False)
             if self.app._overlay:
                 self.app._overlay.withdraw()

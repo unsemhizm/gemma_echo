@@ -37,6 +37,10 @@ pdfplumber>=0.10.0         # PDF okuma (document_translator.py)
 python-docx>=1.1.0         # DOCX okuma (document_translator.py)
 # ebooklib>=0.18           # EPUB destegi — opsiyonel, ikinci asama
 
+# ── Opsiyonel (ozellik bazli) ────────────────────────────────
+keyboard>=0.13.5           # global hotkeys (gui/app.py — yoksa uyari)
+soundcard>=0.4.6           # WASAPI loopback inbound (stt/recorder.py — yoksa uyari)
+
 # ── Yardımcı ─────────────────────────────────────────────────
 python-dotenv==1.2.2
 requests==2.33.1           # ElevenLabs ve Deepgram STT için

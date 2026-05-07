@@ -14,6 +14,12 @@ STRINGS = {
         "ready_stopped": "Ready · stopped",
         "error": "Error",
         "error_caught": "Error caught",
+        "vram_insufficient_title": "Insufficient VRAM",
+        "vram_insufficient_detail": (
+            "The local GPU model could not be loaded — hardware limit reached.\n\n"
+            "If a cloud API key is configured, translation will continue using the online engine. "
+            "Otherwise reduce GPU load (close other apps) or choose a lower-VRAM profile in Settings."
+        ),
         "loading_models": "Loading models...",
         "backend_not_ready": "Backend not ready yet...",
         "live_active": "Live listening active",
@@ -225,6 +231,12 @@ STRINGS = {
         "ready_stopped": "Hazır · durdu",
         "error": "Hata",
         "error_caught": "Hata yakalandı",
+        "vram_insufficient_title": "VRAM yetersiz",
+        "vram_insufficient_detail": (
+            "Yerel GPU modeli yüklenemedi; donanım sınırına ulaşıldı.\n\n"
+            "Bulut API anahtarı tanımlıysa çeviri çevrimiçi motorla sürecek. "
+            "Aksi halde diğer uygulamaları kapatın veya Ayarlar'dan daha düşük VRAM profili seçin."
+        ),
         "loading_models": "Modeller yükleniyor...",
         "backend_not_ready": "Backend henüz hazır değil...",
         "live_active": "Canlı dinleme aktif",

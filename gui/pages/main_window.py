@@ -74,7 +74,10 @@ class MainWindow(ctk.CTk):
     def switch_view(self, name: str):
         for v in self._views.values():
             v.pack_forget()
-        self._views[name].pack(fill="both", expand=True)
+        view = self._views[name]
+        if hasattr(view, "_update_language_labels"):
+            view._update_language_labels()
+        view.pack(fill="both", expand=True)
         self._sidebar.set_active(name)
 
     def set_status(self, text: str, color: str):

@@ -102,24 +102,26 @@ class MediaView(ctk.CTkFrame):
         )
         self._prog_lbl.pack(side="left", padx=(10, 0))
 
-        # ── Metin panelleri (TR | EN) ──────────────────────────────────
+        # ── Metin panelleri (Dinamik diller) ──────────────────────────
         mid = ctk.CTkFrame(self, fg_color="transparent")
         mid.pack(fill="both", expand=True, padx=24, pady=(0, 8))
         mid.columnconfigure(0, weight=1)
         mid.columnconfigure(1, weight=1)
         mid.rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(
-            mid, text=t("tr_transcript"),
+        self._src_lbl = ctk.CTkLabel(
+            mid, text="",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=_C["muted"]
-        ).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 4))
+        )
+        self._src_lbl.grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 4))
 
-        ctk.CTkLabel(
-            mid, text=t("en_translation"),
+        self._tgt_lbl = ctk.CTkLabel(
+            mid, text="",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=_C["blue"]
-        ).grid(row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 4))
+        )
+        self._tgt_lbl.grid(row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 4))
 
         self._tr_box = ctk.CTkTextbox(
             mid, font=ctk.CTkFont(size=12),
@@ -145,22 +147,36 @@ class MediaView(ctk.CTkFrame):
         bot.pack(fill="x", side="bottom")
         bot.pack_propagate(False)
 
-        for label_key, cmd in [
-            ("save_tr",      lambda: self._save("tr")),
-            ("save_en",      lambda: self._save("en")),
-            ("save_both",    lambda: (self._save("tr"), self._save("en"))),
-        ]:
-            ctk.CTkButton(
-                bot, text=t(label_key), height=28, width=120,
-                fg_color=_C["surface2"], hover_color=_C["border"],
-                corner_radius=8, font=ctk.CTkFont(size=10),
-                command=cmd
-            ).pack(side="left", padx=(12, 4), pady=8)
+        self._btn_save_src = ctk.CTkButton(
+            bot, text="", height=28, width=120,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            corner_radius=8, font=ctk.CTkFont(size=10),
+            command=lambda: self._save("source")
+        )
+        self._btn_save_src.pack(side="left", padx=(12, 4), pady=8)
+
+        self._btn_save_tgt = ctk.CTkButton(
+            bot, text="", height=28, width=120,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            corner_radius=8, font=ctk.CTkFont(size=10),
+            command=lambda: self._save("target")
+        )
+        self._btn_save_tgt.pack(side="left", padx=(12, 4), pady=8)
+
+        self._btn_save_both = ctk.CTkButton(
+            bot, text="", height=28, width=120,
+            fg_color=_C["surface2"], hover_color=_C["border"],
+            corner_radius=8, font=ctk.CTkFont(size=10),
+            command=lambda: (self._save("source"), self._save("target"))
+        )
+        self._btn_save_both.pack(side="left", padx=(12, 4), pady=8)
 
         self._elapsed = ctk.CTkLabel(
             bot, text="", font=ctk.CTkFont(size=10), text_color=_C["dim"]
         )
         self._elapsed.pack(side="right", padx=16)
+
+        self._update_language_labels()
 
     # ── Dosya Secimi ──────────────────────────────────────────────────────────
 
@@ -296,6 +312,13 @@ class MediaView(ctk.CTkFrame):
     def _pipeline(self, src: str):
         t0 = time.time()
         wav, owns = None, False
+        
+        # Get language settings from config
+        src_lang = self.cfg.get("language", "source", default="tr")
+        tgt_lang = self.cfg.get("language", "target", default="en")
+        src_name = self.cfg.get("language", "source_name", default="Turkish")
+        tgt_name = self.cfg.get("language", "target_name", default="English")
+        
         try:
             ext = os.path.splitext(src)[1].lower()
 
@@ -312,7 +335,7 @@ class MediaView(ctk.CTkFrame):
                 return
 
             self._set_progress(0.20, t("generating_transcript"), _C["blue"])
-            res    = self.app._orchestrator.transcriber.transcribe(wav)
+            res    = self.app._orchestrator.transcriber.transcribe(wav, source_lang=src_lang)
             txt_tr = res.get("text", "").strip()
 
             if not txt_tr:
@@ -326,7 +349,9 @@ class MediaView(ctk.CTkFrame):
                 return
 
             txt_en = self._translate_chunked(
-                self.app._orchestrator.translator, txt_tr
+                self.app._orchestrator.translator, txt_tr,
+                src_lang=src_lang, tgt_lang=tgt_lang,
+                src_name=src_name, tgt_name=tgt_name
             )
             if not self._processing:
                 return
@@ -376,10 +401,10 @@ class MediaView(ctk.CTkFrame):
             self._ffmpeg_proc = None
         return None, False
 
-    def _translate_chunked(self, translator, text: str) -> str:
+    def _translate_chunked(self, translator, text: str, src_lang="tr", tgt_lang="en", src_name="Turkish", tgt_name="English") -> str:
         words = text.split()
         if len(words) <= _LLM_CHUNK:
-            return translator.translate(text).get("translation", text)
+            return translator.translate(text, src_lang=src_lang, tgt_lang=tgt_lang, src_name=src_name, tgt_name=tgt_name).get("translation", text)
 
         chunks = []
         buf = []
@@ -398,23 +423,25 @@ class MediaView(ctk.CTkFrame):
                 break
             p = 0.55 + 0.40 * (i / total)
             self._set_progress(p, f"Ceviri: {i+1}/{total} bolum", _C["blue"])
-            parts.append(translator.translate(chunk).get("translation", chunk))
+            parts.append(translator.translate(chunk, src_lang=src_lang, tgt_lang=tgt_lang, src_name=src_name, tgt_name=tgt_name).get("translation", chunk))
         return " ".join(parts)
 
-    def _save(self, lang: str):
-        box  = self._tr_box if lang == "tr" else self._en_box
+    def _save(self, kind: str):
+        box  = self._tr_box if kind == "source" else self._en_box
         text = box.get("0.0", "end").strip()
         if not text:
             messagebox.showinfo(t("save_empty_title"), t("save_empty_message"))
             return
         src  = self._file_entry.get().strip()
         base = os.path.splitext(os.path.basename(src))[0] if src else "output"
+        
+        lang_code = self.cfg.get("language", "source" if kind == "source" else "target", default="tr" if kind == "source" else "en")
         save_title = (
-            t("save_as_transcript") if lang == "tr" else t("save_as_translation")
+            t("save_as_transcript") if kind == "source" else t("save_as_translation")
         )
         path = filedialog.asksaveasfilename(
             title=save_title,
-            initialfile=f"{base}_{lang}.txt",
+            initialfile=f"{base}_{lang_code}.txt",
             initialdir=self.cfg.get("file_mode", "output_dir",
                                     default=os.path.expanduser("~")),
             defaultextension=".txt",
@@ -428,6 +455,41 @@ class MediaView(ctk.CTkFrame):
                 f.write(text)
             self.cfg.set("file_mode", "output_dir", os.path.dirname(path))
             self.cfg.save()
+
+    def _update_language_labels(self):
+        from gui.i18n import get_language
+        src_name = self.cfg.get("language", "source_name", default="Turkish")
+        tgt_name = self.cfg.get("language", "target_name", default="English")
+        src_code = self.cfg.get("language", "source", default="tr").upper()
+        tgt_code = self.cfg.get("language", "target", default="en").upper()
+        
+        lang_map_tr = {
+            "Turkish": "Türkçe",
+            "English": "İngilizce",
+            "German": "Almanca",
+            "French": "Fransızca",
+            "Italian": "İtalyanca",
+            "Spanish": "İspanyolca",
+            "Arabic": "Arapça",
+            "Japanese": "Japonca"
+        }
+        
+        ui_lang = get_language()
+        src_disp = lang_map_tr.get(src_name, src_name) if ui_lang == "tr" else src_name
+        tgt_disp = lang_map_tr.get(tgt_name, tgt_name) if ui_lang == "tr" else tgt_name
+        
+        src_label_text = f"{src_disp} Transkript (STT)" if ui_lang == "tr" else f"{src_disp} Transcript (STT)"
+        tgt_label_text = f"{tgt_disp} Çeviri" if ui_lang == "tr" else f"{tgt_disp} Translation"
+        
+        self._src_lbl.configure(text=src_label_text)
+        self._tgt_lbl.configure(text=tgt_label_text)
+        
+        btn_src_text = f"{src_code} Kaydet" if ui_lang == "tr" else f"Save {src_code}"
+        btn_tgt_text = f"{tgt_code} Kaydet" if ui_lang == "tr" else f"Save {tgt_code}"
+        
+        self._btn_save_src.configure(text=btn_src_text)
+        self._btn_save_tgt.configure(text=btn_tgt_text)
+        self._btn_save_both.configure(text=t("save_both"))
 
     # ── Thread-safe yardimcilar ───────────────────────────────────────────────
 
