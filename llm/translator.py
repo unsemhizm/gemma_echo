@@ -126,12 +126,18 @@ class Translator:
         except Exception:
             pass
 
-    def load_local_model(self) -> bool:
+    def load_local_model(self, context_size: int = 512) -> bool:
         """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
-        Zaten yüklüyse tekrar yüklemez (idempotent).
+        Zaten talep edilen bağlam boyutunda yüklüyse tekrar yüklemez (idempotent).
+        Eğer farklı bir boyutta yüklüyse, önce eski modeli indirip yenisini yükler.
         Dönüş: başarı True; VRAM / OOM durumunda False."""
         if self.local_llm is not None:
-            return True
+            if getattr(self, "loaded_n_ctx", 512) == context_size:
+                return True
+            else:
+                print(f"[SİSTEM] Farklı bağlam penceresi istendi ({getattr(self, 'loaded_n_ctx', 512)} -> {context_size}). Yeniden yükleniyor...")
+                self.unload_local_model()
+
         if self._llm_vram_failed:
             return False
 
@@ -153,15 +159,16 @@ class Translator:
             self._invoke_vram_callback()
             return False
 
-        print(f"[SISTEM] Yerel LLM yukleniyor: {self.local_model_path}")
+        print(f"[SISTEM] Yerel LLM yukleniyor (n_ctx={context_size}): {self.local_model_path}")
         start = time.time()
         try:
             self.local_llm = Llama(
                 model_path=self.local_model_path,
                 n_gpu_layers=-1,
-                n_ctx=512,
+                n_ctx=context_size,
                 verbose=False,
             )
+            self.loaded_n_ctx = context_size
         except Exception as e:
             self.local_llm = None
             cleanup_cuda_memory()
@@ -188,6 +195,8 @@ class Translator:
         del self.local_llm
         self.local_llm = None
         self._llm_vram_failed = False
+        if hasattr(self, "loaded_n_ctx"):
+            del self.loaded_n_ctx
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -217,18 +226,21 @@ class Translator:
     # ═══════════════════════════════════════════════════════════
 
     def translate(self, text_tr: str, context: list = [], src_lang="tr", tgt_lang="en",
-                  src_name="Turkish", tgt_name="English") -> dict:
+                  src_name="Turkish", tgt_name="English", prev_translation: str = "",
+                  rolling_summary: str = "") -> dict:
         """
         Gelen metni hedef dile çevirir.
         Aktif moda göre online veya offline motora yönlendirir.
 
         Args:
-            text_tr:   Çevrilecek metin
-            context:   Zamir çevirisi için önceki cümleler (opsiyonel)
-            src_lang:  Kaynak dil kodu (tr, en, ...)
-            tgt_lang:  Hedef dil kodu
-            src_name:  LLM promptu için kaynak dil adı
-            tgt_name:  LLM promptu için hedef dil adı
+            text_tr:          Çevrilecek metin
+            context:          Zamir çevirisi için önceki cümleler (opsiyonel)
+            src_lang:         Kaynak dil kodu (tr, en, ...)
+            tgt_lang:         Hedef dil kodu
+            src_name:         LLM promptu için kaynak dil adı
+            tgt_name:         LLM promptu için hedef dil adı
+            prev_translation: Bir önceki chunk'ın hedef dildeki (örn: İngilizce) çeviri çıktısı (Aşama 2)
+            rolling_summary:  Dökümanın şu ana kadarki yürüyen özeti (Aşama 2)
 
         Returns:
             dict: {"translation": str, "latency_ms": int, "engine": str}
@@ -259,8 +271,66 @@ class Translator:
         self.system_prompt = self._build_system_prompt(src_name, tgt_name)
 
         if self.mode == "online":
-            return self.translate_online(text_tr, context, hint)
-        return self.translate_offline(text_tr, context, hint)
+            return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+        return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+
+    # ═══════════════════════════════════════════════════════════
+    # YÜRÜYEN ÖZET OLUŞTURMA (Aşama 2)
+    # ═══════════════════════════════════════════════════════════
+
+    def generate_summary(self, text: str, current_summary: str = "") -> str:
+        """Gelen yeni çevrilen parçayı ve mevcut özeti kullanarak yürüyen döküman özetini günceller."""
+        prompt = (
+            f"You are an assistant summarizing a document so far. "
+            f"Update the following current summary with the key points from the new translated section. "
+            f"Keep the total summary under 100 words. Keep it clear, factual and coherent.\n\n"
+            f"Current Summary: {current_summary or 'No summary yet.'}\n\n"
+            f"New Translated Section: {text}\n\n"
+            f"Updated Summary (Reply ONLY with the new updated summary under 100 words):"
+        )
+
+        if self.mode == "online":
+            try:
+                # Yarışma gereği her zaman 1. öncelik Gemma 4 modelimizdir!
+                resp = self.gemini_client.models.generate_content(
+                    model=self.gemma4_api_model,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        max_output_tokens=150
+                    ),
+                    contents=prompt
+                )
+                return (resp.text or "").strip()
+            except Exception as e:
+                print(f"[UYARI] Gemma 4 Özetleme Hatası, Gemini Flash Fallback devreye giriyor: {e}")
+                try:
+                    # Fallback olarak hızlı/ekonomik yedek motoru kullanıyoruz
+                    resp = self.gemini_client.models.generate_content(
+                        model=self.gemini_fallback_model,
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                            max_output_tokens=150
+                        ),
+                        contents=prompt
+                    )
+                    return (resp.text or "").strip()
+                except Exception:
+                    return current_summary
+        else:
+            if self.local_llm is None:
+                if not self.load_local_model():
+                    return current_summary
+            try:
+                response = self.local_llm.create_chat_completion(
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=100
+                )
+                return response["choices"][0]["message"]["content"].strip()
+            except Exception:
+                return current_summary
 
     # ═══════════════════════════════════════════════════════════
     # ONLINE ÇEVİRİ — 3 Katmanlı Turbo Fallback Zinciri
@@ -305,14 +375,15 @@ class Translator:
             raise ValueError(f"Gemini ({model_name}) bos cevap dondu.")
         return result[0]
 
-    def translate_online(self, text_tr: str, context: list = [], hint: str = "") -> dict:
+    def translate_online(self, text_tr: str, context: list = [], hint: str = "",
+                         prev_translation: str = "", rolling_summary: str = "") -> dict:
         """
         Bulut API'leri üzerinden çeviri yapar.
         2 katmanlı fallback: Gemini API (Gemma 4) başarısız → Gemini 2.5 Flash
         İkisi de başarısız olursa hata döner.
         """
         # Context varsa kullanıcı mesajını zenginleştir
-        user_message = self._build_user_message(text_tr, context, hint)
+        user_message = self._build_user_message(text_tr, context, hint, prev_translation, rolling_summary)
 
         # --- KATMAN 1: GEMINI API (GEMMA 4) ---
         gemini_gemma_start = time.time()
@@ -340,33 +411,64 @@ class Translator:
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
         except TimeoutError:
-            print(f"\n[KRİTİK HATA] Gemini 2.5 Flash Zaman Asimi (8s). Tüm katmanlar başarısız.")
+            print(f"\n[UYARI] Gemini 2.5 Flash Zaman Aşımı (8s). Yerel modele düşülüyor...")
         except Exception as e:
-            print(f"\n[KRİTİK HATA] Gemini 2.5 Flash Hatasi: {e}. Tüm katmanlar başarısız.")
+            print(f"\n[UYARI] Gemini 2.5 Flash Hatası: {e}. Yerel modele düşülüyor...")
 
-        return {
-            "translation": "[ÇEVİRİ HATASI]",
-            "latency_ms": 0,
-            "engine": "Failed"
-        }
+        # --- KATMAN 3: YEREL OFFLINE MODEL FALLBACK (Kesintisiz Hizmet) ---
+        print("\n[SİSTEM] Tüm Bulut API'leri başarısız oldu! Sıfır-Kesinti için Yerel Gemma Modeli (GGUF) devreye sokuluyor...")
+        try:
+            return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+        except Exception as local_err:
+            print(f"[KRİTİK HATA] Yerel çevrimdışı model de başarısız oldu: {local_err}")
+            return {
+                "translation": "[ÇEVİRİ HATASI]",
+                "latency_ms": 0,
+                "engine": "Failed"
+            }
 
     # ═══════════════════════════════════════════════════════════
     # OFFLINE ÇEVİRİ — Yerel llama-cpp (Zero-Dependency)
     # ═══════════════════════════════════════════════════════════
 
-    def translate_offline(self, text_tr: str, context: list = [], hint: str = "") -> dict:
+    def translate_offline(self, text_tr: str, context: list = [], hint: str = "",
+                          prev_translation: str = "", rolling_summary: str = "") -> dict:
         """
         Yerel GGUF modeli üzerinden çeviri yapar.
         İnternet gerektirmez. Model lazy load ile VRAM'e alınır.
         """
+        # Bağlam parametresi belirleme: Uzun dokümanlarda (Aşama 2 özellikleri varsa) 2048, standart telsizde 512!
+        req_ctx = 2048 if (prev_translation or rolling_summary) else 512
+
         if self.local_llm is None:
             if self._llm_vram_failed:
-                return self.translate_online(text_tr, context, hint)
-            if not self.load_local_model():
-                return self.translate_online(text_tr, context, hint)
+                return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+            if not self.load_local_model(req_ctx):
+                return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+        else:
+            if getattr(self, "loaded_n_ctx", 512) != req_ctx:
+                self.load_local_model(req_ctx)
 
-        user_message = self._build_user_message(text_tr, context, hint)
+        user_message = self._build_user_message(text_tr, context, hint, prev_translation, rolling_summary)
         start_time = time.time()
+
+        # MATEMATİKSEL KUSURSUZ KELEPÇELEME (Girdi + Çıktı <= loaded_n_ctx)
+        try:
+            full_prompt = f"{self.system_prompt}\n{user_message}"
+            prompt_tokens = len(self.local_llm.tokenize(full_prompt.encode('utf-8')))
+        except Exception:
+            prompt_tokens = int(len(full_prompt.split()) * 1.5)
+
+        context_size = getattr(self, "loaded_n_ctx", req_ctx)
+        safe_margin = 50  # llama.cpp'nin çökmesini kesin olarak engelleyen emniyet payı
+        remaining_space = max(50, context_size - prompt_tokens - safe_margin)
+
+        # Kelime sayısına göre istenen token miktarı
+        input_words = len(text_tr.split())
+        desired_tokens = max(150, int(input_words * 2.0))
+
+        # Çıkışı kalan güvenli boşluğa kelepçeliyoruz
+        dynamic_max_tokens = min(desired_tokens, remaining_space)
 
         try:
             response = self.local_llm.create_chat_completion(
@@ -375,7 +477,7 @@ class Translator:
                     {"role": "user", "content": user_message}
                 ],
                 temperature=0.1,
-                max_tokens=150
+                max_tokens=dynamic_max_tokens
             )
             translation = response["choices"][0]["message"]["content"].strip()
             latency = int((time.time() - start_time) * 1000)
@@ -397,20 +499,19 @@ class Translator:
     # YARDIMCI METOTLAR
     # ═══════════════════════════════════════════════════════════
 
-    def _build_user_message(self, text_tr: str, context: list = [], hint: str = "") -> str:
+    def _build_user_message(self, text_tr: str, context: list = [], hint: str = "",
+                            prev_translation: str = "", rolling_summary: str = "") -> str:
         """
-        Context varsa zamir çevirisi için önceki cümleleri prompt'a ekler.
-        Context yoksa sadece çevrilecek metni döner.
-
-        Örnek:
-            text_tr = "O çok yorgundu"
-            context = ["Ahmet dün geldi."]
-            → "Context: Ahmet dün geldi.\n\nTranslate: O çok yorgundu"
+        Context, prev_translation ve rolling_summary varsa prompt'a ekler.
         """
         msg = hint
+        if rolling_summary:
+            msg += f"[OVERARCHING CONTEXT / DOCUMENT SUMMARY]\n{rolling_summary}\n\n"
         if context:
             context_str = " ".join(context)
-            msg += f"Context: {context_str}\n\n"
+            msg += f"[PREVIOUS SOURCE PARAGRAPHS]\n{context_str}\n\n"
+        if prev_translation:
+            msg += f"[PREVIOUS TARGET TRANSLATION FLOW]\n{prev_translation}\n\n"
         msg += f"Translate: {text_tr}"
         return msg
 
