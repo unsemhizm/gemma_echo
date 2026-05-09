@@ -25,7 +25,16 @@ def _load_cultural_concepts() -> dict:
 CULTURAL_CONCEPTS = _load_cultural_concepts()
 
 # ── Persona Şablonları (Dinamik — {tgt_lang} ile hedef dile göre uyarlanır) ──
+#
+# "default" → Hiçbir persona talimatı eklenmez; saf, tarafsız çeviri yapılır.
+#              Kullanıcı bir persona seçmek zorunda değildir.
+# "none"    → "default" ile özdeş; geriye dönük uyumluluk için korunmuştur.
 PERSONA_TEMPLATES = {
+    # ── Tarafsız (varsayılan) ─────────────────────────────────────────────────
+    "default": "",   # Prompt'a ek talimat eklenmez — saf çeviri motoru
+    "none":    "",   # Geriye dönük uyumluluk takma adı
+
+    # ── Stil personaları ─────────────────────────────────────────────────────
     "official": (
         "Tone: Act as a senior diplomat or academic professional. "
         "Use the most formal, polished, and respectful register of {tgt_lang}. "
@@ -87,19 +96,37 @@ class Translator:
         self._llm_vram_failed = False
         self.vram_issue_callback = None  # GUI uyarısı: () -> None
 
-        # Aktif persona ("none" | "official" | "streamer" | "casual" | "literary")
-        self.persona = "none"
+        # Aktif persona — varsayılan "default" (hiçbir stil talimatı eklenmez).
+        # Kullanıcı isteğe bağlı olarak bir persona seçebilir.
+        # Geçerli değerler: "default" | "none" | "official" | "streamer" | "casual" | "literary"
+        self.persona = "default"
 
         # Varsayilan sistem promptu — translate() cagrisi oncesi direct offline cagrilari icin
         self.system_prompt = self._build_system_prompt()
 
     def set_persona(self, persona: str):
-        """Aktif persona stilini ayarlar. Gecersiz deger verilirse 'none' kullanilir."""
-        valid = {"none", "official", "streamer", "casual", "literary"}
-        self.persona = persona if persona in valid else "none"
+        """Aktif persona stilini ayarlar.
+
+        Geçerli değerler:
+          "default"  — Hiçbir persona talimatı yok; saf çeviri (varsayılan).
+          "none"     — "default" ile özdeş, geriye dönük uyumluluk.
+          "official" — Diplomat / akademik resmi üslup.
+          "streamer" — Yayıncı / internet jargonu.
+          "casual"   — Samimi / günlük konuşma.
+          "literary" — Edebi / şiirsel çeviri.
+
+        Geçersiz bir değer verilirse 'default' kullanılır.
+        """
+        valid = {"default", "none", "official", "streamer", "casual", "literary"}
+        self.persona = persona if persona in valid else "default"
 
     def _build_system_prompt(self, src_lang="Turkish", tgt_lang="English") -> str:
-        """Dinamik sistem promptu olusturur. Aktif persona varsa stil talimati eklenir."""
+        """Dinamik sistem promptu oluşturur.
+
+        Persona "default" veya "none" ise (ya da bilinmiyorsa) sadece temel
+        çeviri talimatı döner — prompt'a herhangi bir stil eki yapılmaz.
+        Bir stil personası seçilmişse ilgili talimat base'e eklenir.
+        """
         base = (
             f"You are a lightning-fast translator. Translate the following {src_lang} text to {tgt_lang}. "
             f"Reply ONLY with the {tgt_lang} translation. Do not add quotes, explanations, or any other text. "
@@ -107,7 +134,7 @@ class Translator:
             f"Always find the natural, culturally equivalent expression a native {tgt_lang} speaker would actually say."
         )
         persona_template = PERSONA_TEMPLATES.get(self.persona, "")
-        if persona_template:
+        if persona_template:  # "default" ve "none" boş string → bu dal çalışmaz
             persona_instr = persona_template.format(tgt_lang=tgt_lang)
             return f"{base}\n{persona_instr}"
         return base
@@ -317,16 +344,32 @@ class Translator:
                 except Exception:
                     return current_summary
         else:
+            # generate_summary için sabit 512 yeterli (prompt + özet < 400 token)
             if self.local_llm is None:
-                if not self.load_local_model():
+                if not self.load_local_model(512):
                     return current_summary
             try:
+                # DÜZELTME: Offline dalında token hesabı ekle
+                CHAT_TEMPLATE_OVERHEAD = 35
+                safe_margin = 100
+                try:
+                    p_tokens = len(self.local_llm.tokenize(prompt.encode('utf-8'))) + CHAT_TEMPLATE_OVERHEAD
+                    ctx = getattr(self, "loaded_n_ctx", 512)
+                    safe_max = max(30, ctx - p_tokens - safe_margin)
+                    actual_max = min(100, safe_max)
+                except Exception:
+                    actual_max = 80  # konservatif fallback
+
+                if actual_max < 20:
+                    print("[UYARI] generate_summary: prompt context'i dolduruyor, özet atlanıyor.")
+                    return current_summary
+
                 response = self.local_llm.create_chat_completion(
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.1,
-                    max_tokens=100
+                    max_tokens=actual_max
                 )
                 return response["choices"][0]["message"]["content"].strip()
             except Exception:
@@ -452,23 +495,40 @@ class Translator:
         user_message = self._build_user_message(text_tr, context, hint, prev_translation, rolling_summary)
         start_time = time.time()
 
-        # MATEMATİKSEL KUSURSUZ KELEPÇELEME (Girdi + Çıktı <= loaded_n_ctx)
+        # DÜZELTME: Doğru token hesabı + chat template overhead + artırılmış güvenlik marjı
+        CHAT_TEMPLATE_OVERHEAD = 35   # Gemma chat template tokenleri (<bos>, <start_of_turn>, vb.)
+        safe_margin = 150              # 50 → 150 (güvenlik payı artırıldı)
+
         try:
-            full_prompt = f"{self.system_prompt}\n{user_message}"
-            prompt_tokens = len(self.local_llm.tokenize(full_prompt.encode('utf-8')))
+            sys_tokens  = len(self.local_llm.tokenize(self.system_prompt.encode('utf-8')))
+            user_tokens = len(self.local_llm.tokenize(user_message.encode('utf-8')))
+            prompt_tokens = sys_tokens + user_tokens + CHAT_TEMPLATE_OVERHEAD
         except Exception:
-            prompt_tokens = int(len(full_prompt.split()) * 1.5)
+            # Fallback: kelime-bazlı tahmin, ekstra %50 güvenlik katsayısı
+            word_est = len((self.system_prompt + user_message).split())
+            prompt_tokens = int(word_est * 1.5) + CHAT_TEMPLATE_OVERHEAD
 
         context_size = getattr(self, "loaded_n_ctx", req_ctx)
-        safe_margin = 50  # llama.cpp'nin çökmesini kesin olarak engelleyen emniyet payı
-        remaining_space = max(50, context_size - prompt_tokens - safe_margin)
+        remaining_space = max(30, context_size - prompt_tokens - safe_margin)
 
-        # Kelime sayısına göre istenen token miktarı
+        # Kelime sayısına göre istenen token miktarı — adaptif alt sınır
         input_words = len(text_tr.split())
-        desired_tokens = max(150, int(input_words * 2.0))
+        desired_tokens = min(
+            int(input_words * 2.0),
+            max(60, remaining_space)  # asla remaining_space'i aşamaz
+        )
 
         # Çıkışı kalan güvenli boşluğa kelepçeliyoruz
         dynamic_max_tokens = min(desired_tokens, remaining_space)
+
+        # Güvenlik net'i: context doluysa online'a düş, sessizce batma
+        if dynamic_max_tokens < 20:
+            print(
+                f"[UYARI] Offline context dolu: prompt={prompt_tokens} token, "
+                f"n_ctx={context_size}, kalan={remaining_space}. "
+                f"Online fallback devreye giriyor."
+            )
+            return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
 
         try:
             response = self.local_llm.create_chat_completion(
@@ -500,18 +560,24 @@ class Translator:
     # ═══════════════════════════════════════════════════════════
 
     def _build_user_message(self, text_tr: str, context: list = [], hint: str = "",
-                            prev_translation: str = "", rolling_summary: str = "") -> str:
+                            prev_translation: str = "", rolling_summary: str = "",
+                            max_ctx_chars: int = 800) -> str:
         """
         Context, prev_translation ve rolling_summary varsa prompt'a ekler.
+        Uzun içerikler için kırpma uygular.
         """
         msg = hint
         if rolling_summary:
-            msg += f"[OVERARCHING CONTEXT / DOCUMENT SUMMARY]\n{rolling_summary}\n\n"
+            # Rolling summary'yi kırp — zaten özet, 300 char yeterli
+            trimmed_summary = rolling_summary[:300]
+            msg += f"[DOCUMENT SUMMARY]\n{trimmed_summary}\n\n"
         if context:
-            context_str = " ".join(context)
-            msg += f"[PREVIOUS SOURCE PARAGRAPHS]\n{context_str}\n\n"
+            context_str = " ".join(context)[-max_ctx_chars:]  # son N char
+            msg += f"[PREVIOUS PARAGRAPHS]\n{context_str}\n\n"
         if prev_translation:
-            msg += f"[PREVIOUS TARGET TRANSLATION FLOW]\n{prev_translation}\n\n"
+            # Önceki çeviriyi de kırp
+            trimmed_prev = prev_translation[-400:]
+            msg += f"[PREVIOUS TRANSLATION]\n{trimmed_prev}\n\n"
         msg += f"Translate: {text_tr}"
         return msg
 
@@ -535,8 +601,8 @@ class Translator:
         for key, data in cmap.items():
             clean_key = self._strip_punct(self._tr_lower(key))
             if clean_input == clean_key:
-                # Fast-track: EN hedef + persona yok → LLM bypass (0ms)
-                if tgt_lang == "en" and self.persona == "none":
+                # Fast-track: EN hedef + persona yok ("default" veya "none") → LLM bypass (0ms)
+                if tgt_lang == "en" and self.persona in ("default", "none"):
                     return data["en_default"], "exact_fast"
                 # Deep-track: intent hint ile LLM'e git
                 return (key, data["intent"]), "exact_intent"

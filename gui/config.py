@@ -106,8 +106,9 @@ def _default_config(hw: dict) -> dict:
         },
 
         # ── Çeviri Karakteri (Persona) ─────────────────────────
-        # "none" | "official" | "streamer" | "casual" | "literary"
-        "persona": "none",
+        # "default" — Hiçbir persona (varsayılan, kullanıcı seçmek zorunda değil)
+        # "official" | "streamer" | "casual" | "literary"
+        "persona": "default",
 
 
         # ── Yayıncı / İçerik Üretici Ayarları ──────────────────────

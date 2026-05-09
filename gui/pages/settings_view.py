@@ -294,14 +294,14 @@ class SettingsView(ctk.CTkFrame):
         _InfoIcon(persona_hdr, t("tip_persona")).pack(side="left", padx=(4, 0))
 
         _PERSONA_OPTIONS = [
-            ("none",     "persona_none"),
+            ("default",  "persona_none"),
             ("official", "persona_official"),
             ("streamer", "persona_streamer"),
             ("casual",   "persona_casual"),
             ("literary", "persona_literary"),
         ]
         persona_vals = [t(p[1]) for p in _PERSONA_OPTIONS]
-        cur_persona  = self.cfg.get("persona", default="none")
+        cur_persona  = self.cfg.get("persona", default="default")
         cur_persona_idx = next(
             (i for i, p in enumerate(_PERSONA_OPTIONS) if p[0] == cur_persona), 0
         )
@@ -652,7 +652,7 @@ class SettingsView(ctk.CTkFrame):
             self.app._reregister_hotkeys(key_out, key_in)
 
     def _on_persona(self, display: str, options: list):
-        key = next((p[0] for p in options if t(p[1]) == display), "none")
+        key = next((p[0] for p in options if t(p[1]) == display), "default")
         self.cfg.set("persona", key)
         self.cfg.save()
         # Canlı güncelleme: orkestra hazırsa anında translator'a bildir

@@ -17,6 +17,8 @@ import os
 import sys
 import queue
 import threading
+import logging
+import traceback
 
 import customtkinter as ctk
 
@@ -69,6 +71,76 @@ class GemmaEchoApp:
         self._orchestrator                     = None
         self._backend_thread                   = None
         self._ptt_hotkeys_registered          = False  # Space/Alt sadece canlı kayıt aktifken
+
+        self._init_logging()
+
+    def _init_logging(self):
+        log_path = os.path.join(_ROOT, "gemma_echo.log")
+        handlers = [
+            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ]
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            handlers=handlers,
+        )
+        self.logger = logging.getLogger("GemmaEcho")
+        self.logger.info("Gemma Echo GUI başlatılıyor")
+
+        def excepthook(exc_type, exc_value, exc_traceback):
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            self._handle_uncaught_exception(exc_type, exc_value, exc_traceback)
+
+        sys.excepthook = excepthook
+        if hasattr(threading, "excepthook"):
+            threading.excepthook = self._threading_excepthook
+
+    def _handle_uncaught_exception(self, exc_type, exc_value, exc_traceback):
+        message = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        self.logger.error("Uncaught exception:\n%s", message)
+        if self._main:
+            try:
+                self._main.after(0, lambda: self._show_error_dialog(
+                    "Beklenmeyen Hata",
+                    message
+                ))
+            except Exception:
+                pass
+
+    def _threading_excepthook(self, args):
+        message = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+        self.logger.error("Thread exception:\n%s", message)
+        if self._main:
+            try:
+                self._main.after(0, lambda: self._show_error_dialog(
+                    "Arka Plan Hatası",
+                    message
+                ))
+            except Exception:
+                pass
+
+    def _show_error_dialog(self, title: str, message: str):
+        from tkinter import messagebox
+
+        def _show():
+            try:
+                parent = self._main if self._main is not None else None
+                messagebox.showerror(
+                    title,
+                    f"{message}\n\nDetaylar '{os.path.basename(os.path.abspath(_ROOT))}.log' dosyasına kaydedildi.",
+                    parent=parent,
+                )
+            except Exception:
+                pass
+
+        if self._main is not None:
+            try:
+                self._main.after(0, _show)
+            except Exception:
+                pass
 
     def _on_vram_issue(self):
         """Yerel model VRAM hatası — ana iş parçacığında messagebox."""
@@ -172,7 +244,18 @@ class GemmaEchoApp:
             ))
 
         except Exception as e:
-            self._overlay.set_status(t("mode_error", str(e)), _C["red"])
+            error_text = str(e)
+            traceback_text = traceback.format_exc()
+            self.logger.error("Backend yükleme hatası:\n%s", traceback_text)
+            self._overlay.set_status(t("mode_error", error_text), _C["red"])
+            if self._main is not None:
+                try:
+                    self._main.after(0, lambda: self._show_error_dialog(
+                        "Backend Yükleme Hatası",
+                        traceback_text
+                    ))
+                except Exception:
+                    pass
 
     # ── Kayit Kontrolu ─────────────────────────────────────────────────────────
 
