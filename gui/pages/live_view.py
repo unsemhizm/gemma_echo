@@ -77,13 +77,13 @@ class LiveView(ctk.CTkFrame):
         ptt_row.pack(fill="x", pady=(10, 0))
 
         ctk.CTkLabel(
-            ptt_row, text="Cift Yonlu Mod:",
+            ptt_row, text=t("ppt_mode_label"),
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=_C["text"],
         ).pack(side="left", padx=(0, 10))
 
         self._btn_outbound = ctk.CTkButton(
-            ptt_row, text="SPACE  —  Sen Konusursun",
+            ptt_row, text=t("ppt_outbound_hint"),
             font=ctk.CTkFont(size=10),
             fg_color=_C["surface2"], hover_color=_C["blue_bg"],
             text_color=_C["muted"], height=30, corner_radius=8,
@@ -92,7 +92,7 @@ class LiveView(ctk.CTkFrame):
         self._btn_outbound.pack(side="left", padx=(0, 6))
 
         self._btn_inbound = ctk.CTkButton(
-            ptt_row, text="ALT  —  Karsi Tarafi Dinle",
+            ptt_row, text=t("ppt_inbound_hint"),
             font=ctk.CTkFont(size=10),
             fg_color=_C["surface2"], hover_color="#1a3a1a",
             text_color=_C["muted"], height=30, corner_radius=8,

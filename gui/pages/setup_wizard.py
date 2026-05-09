@@ -177,14 +177,14 @@ class SetupWizard(ctk.CTk):
             f"{gpu['name']}  ({gpu['vram_gb']} GB VRAM)"
             if gpu["type"] == "cuda"
             else gpu["name"] if gpu["available"]
-            else "GPU bulunamadı"
+            else t("gpu_not_found")
         )
 
         rows = [
-            ("İşletim Sistemi", hw["os"].upper(),    "white"),
-            ("RAM",             f"{hw['ram_gb']} GB", "white"),
-            ("CPU Çekirdek",    str(hw["cpu_cores"]), "white"),
-            ("GPU",             gpu_text,             gpu_color),
+            (t("operating_system_label"), hw["os"].upper(),    "white"),
+            (t("ram_label"),             f"{hw['ram_gb']} GB", "white"),
+            (t("cpu_cores_label"),    str(hw["cpu_cores"]), "white"),
+            (t("gpu_label"),             gpu_text,             gpu_color),
         ]
         for label, value, color in rows:
             _hw_row(hw_card, label, value, color)
@@ -266,13 +266,13 @@ class SetupWizard(ctk.CTk):
         ).grid(row=0, column=0, padx=16, pady=(14, 4), sticky="w")
 
         ctk.CTkLabel(
-            voice_frame, text="ElevenLabs ses kütüphanesinden kopyalayın",
+            voice_frame, text=t("elevenlabs_copy_hint"),
             font=ctk.CTkFont(size=10), text_color="#aabbcc"
         ).grid(row=1, column=0, padx=16, pady=(0, 8), sticky="w")
 
         self._voice_entry = ctk.CTkEntry(
             voice_frame, width=320, height=36,
-            placeholder_text="Örn: 21m00Tcm4TlvDq8ikWAM",
+            placeholder_text=t("voice_id_example_placeholder"),
             font=ctk.CTkFont(size=12)
         )
         saved_vid = self.cfg.get("elevenlabs_voice_id", default="")
@@ -492,7 +492,7 @@ def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> c
     service_key = display.split(" ")[0].lower()
     existing    = cfg.get("api_keys", service_key, default="")
     entry = ctk.CTkEntry(frame, width=210, height=32, show="•", font=ctk.CTkFont(size=11),
-                         placeholder_text="API anahtarı...")
+                         placeholder_text=t("api_key_placeholder"))
     if existing:
         entry.insert(0, existing)
     entry.pack(side="left", padx=8, pady=10)

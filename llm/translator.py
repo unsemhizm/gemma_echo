@@ -9,9 +9,12 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from llama_cpp import Llama
+from core.logger import get_logger
 
 # Çevresel değişkenleri yükle
 load_dotenv()
+
+log = get_logger(__name__)
 
 
 def _load_cultural_concepts() -> dict:
@@ -71,7 +74,7 @@ class Translator:
           llama-cpp-python → ./models/gemma-4-q4.gguf
           Talep üzerine yüklenir (lazy load), VRAM israfı olmaz.
         """
-        print("[SİSTEM] Translator v8 'Multi-State' Modülü Başlatılıyor...")
+        log.info("Translator v8 'Multi-State' Modülü başlatılıyor...")
 
         # Aktif mod: "online" (varsayılan) veya "offline"
         self.mode = "online"
@@ -162,7 +165,11 @@ class Translator:
             if getattr(self, "loaded_n_ctx", 512) == context_size:
                 return True
             else:
-                print(f"[SİSTEM] Farklı bağlam penceresi istendi ({getattr(self, 'loaded_n_ctx', 512)} -> {context_size}). Yeniden yükleniyor...")
+                log.info(
+                    f"Farklı bağlam penceresi istendi "
+                    f"({getattr(self, 'loaded_n_ctx', 512)} -> {context_size}). "
+                    f"Yeniden yükleniyor..."
+                )
                 self.unload_local_model()
 
         if self._llm_vram_failed:
@@ -177,16 +184,16 @@ class Translator:
 
         ok, free = vram_sufficient_for_llm()
         if not ok:
-            print(
-                f"[UYARI] Yerel LLM VRAM on kontrolu basarisiz "
-                f"(bos: {free} B, esik: {MIN_FREE_BYTES_LOCAL_LLM} B)"
+            log.warning(
+                f"Yerel LLM VRAM ön kontrolü başarısız "
+                f"(boş: {free} B, eşik: {MIN_FREE_BYTES_LOCAL_LLM} B)"
             )
             self._llm_vram_failed = True
             cleanup_cuda_memory()
             self._invoke_vram_callback()
             return False
 
-        print(f"[SISTEM] Yerel LLM yukleniyor (n_ctx={context_size}): {self.local_model_path}")
+        log.info(f"Yerel LLM yükleniyor (n_ctx={context_size}): {self.local_model_path}")
         start = time.time()
         try:
             self.local_llm = Llama(
@@ -200,7 +207,14 @@ class Translator:
             self.local_llm = None
             cleanup_cuda_memory()
             if is_cuda_oom_error(e):
-                print(f"[UYARI] Yerel LLM CUDA OOM: {e}")
+                # │ VRAM TAŞMAŞI ─────────────────────────────────────────────────────────────
+                # exc_info=True ile tam stack trace log dosyasına yazılır.
+                # Bu olmadan CUDA OOM ne zaman, hangi satırda olduğu bilinmez.
+                log.error(
+                    "Yerel LLM CUDA OOM — VRAM yetersiz, model yüklenemedi. "
+                    "Sistem online fallback'e geçiyor.",
+                    exc_info=True
+                )
                 self._llm_vram_failed = True
                 self._invoke_vram_callback()
                 return False
@@ -208,7 +222,7 @@ class Translator:
 
         self._llm_vram_failed = False
         elapsed = int((time.time() - start) * 1000)
-        print(f"[SISTEM] Yerel LLM hazir ({elapsed}ms).")
+        log.info(f"Yerel LLM hazır ({elapsed}ms).")
         return True
 
     def unload_local_model(self):
@@ -218,7 +232,7 @@ class Translator:
             self._llm_vram_failed = False
             return
 
-        print("[SISTEM] Yerel LLM VRAM'den bosaltilyior...")
+        log.info("Yerel LLM VRAM'den boşaltılıyor...")
         del self.local_llm
         self.local_llm = None
         self._llm_vram_failed = False
@@ -227,7 +241,7 @@ class Translator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        print("[SISTEM] Yerel LLM VRAM'den bosaltildi.")
+        log.info("Yerel LLM VRAM'den boşaltıldı.")
 
     # ═══════════════════════════════════════════════════════════
     # MOD YÖNETİMİ
@@ -246,7 +260,7 @@ class Translator:
         self.mode = mode
         if mode == "offline":
             self._llm_vram_failed = False
-        print(f"[SİSTEM] Translator modu değişti: {old_mode} -> {mode}")
+        log.info(f"Translator modu değişti: {old_mode} -> {mode}")
 
     # ═══════════════════════════════════════════════════════════
     # ANA ÇEVİRİ METODU (Yönlendirici)
@@ -329,7 +343,7 @@ class Translator:
                 )
                 return (resp.text or "").strip()
             except Exception as e:
-                print(f"[UYARI] Gemma 4 Özetleme Hatası, Gemini Flash Fallback devreye giriyor: {e}")
+                log.warning(f"Gemma 4 Özetleme Hatası, Gemini Flash Fallback devreye giriyor.", exc_info=True)
                 try:
                     # Fallback olarak hızlı/ekonomik yedek motoru kullanıyoruz
                     resp = self.gemini_client.models.generate_content(
@@ -361,7 +375,7 @@ class Translator:
                     actual_max = 80  # konservatif fallback
 
                 if actual_max < 20:
-                    print("[UYARI] generate_summary: prompt context'i dolduruyor, özet atlanıyor.")
+                    log.warning("generate_summary: prompt context'i dolduruyor, özet atlanıyor.")
                     return current_summary
 
                 response = self.local_llm.create_chat_completion(
@@ -439,9 +453,12 @@ class Translator:
                 "engine": f"Gemini API ({self.gemma4_api_model})"
             }
         except TimeoutError:
-            print(f"\n[UYARI] Gemini API (Gemma 4) Zaman Asimi (8s) -> Gemini 2.5 Flash'a Geciliyor...")
-        except Exception as e:
-            print(f"\n[UYARI] Gemini API (Gemma 4) Hatasi: {e} -> Gemini 2.5 Flash'a Geciliyor...")
+            log.warning(f"Gemini API ({self.gemma4_api_model}) Zaman Aşımı (8s) -> Gemini 2.5 Flash'a geçiliyor...")
+        except Exception:
+            log.warning(
+                f"Gemini API ({self.gemma4_api_model}) hatası -> Gemini 2.5 Flash'a geçiliyor.",
+                exc_info=True
+            )
 
         # --- KATMAN 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
@@ -454,16 +471,19 @@ class Translator:
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
         except TimeoutError:
-            print(f"\n[UYARI] Gemini 2.5 Flash Zaman Aşımı (8s). Yerel modele düşülüyor...")
-        except Exception as e:
-            print(f"\n[UYARI] Gemini 2.5 Flash Hatası: {e}. Yerel modele düşülüyor...")
+            log.warning("Gemini 2.5 Flash Zaman Aşımı (8s). Yerel modele düşülüyor...")
+        except Exception:
+            log.warning("Gemini 2.5 Flash hatası. Yerel modele düşülüyor.", exc_info=True)
 
         # --- KATMAN 3: YEREL OFFLINE MODEL FALLBACK (Kesintisiz Hizmet) ---
-        print("\n[SİSTEM] Tüm Bulut API'leri başarısız oldu! Sıfır-Kesinti için Yerel Gemma Modeli (GGUF) devreye sokuluyor...")
+        log.warning("Tüm Bulut API'leri başarısız! Yerel Gemma Modeli (GGUF) devreye sokuluyor...")
         try:
             return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
-        except Exception as local_err:
-            print(f"[KRİTİK HATA] Yerel çevrimdışı model de başarısız oldu: {local_err}")
+        except Exception:
+            log.critical(
+                "Yerel çevrimdışı model de başarısız oldu — tüm katmanlar çöktü!",
+                exc_info=True
+            )
             return {
                 "translation": "[ÇEVİRİ HATASI]",
                 "latency_ms": 0,
@@ -523,10 +543,14 @@ class Translator:
 
         # Güvenlik net'i: context doluysa online'a düş, sessizce batma
         if dynamic_max_tokens < 20:
-            print(
-                f"[UYARI] Offline context dolu: prompt={prompt_tokens} token, "
-                f"n_ctx={context_size}, kalan={remaining_space}. "
-                f"Online fallback devreye giriyor."
+            # TOKEN TAŞMAŞI ─────────────────────────────────────────────────────────────
+            # Bu durum llama.cpp'nin sessizce "Requested tokens exceed context window"
+            # hatası atmasına veya boş çıktı üretmesine yol açar.
+            # WARNING seviyesinde logla — kaybolmaz, izlenebilir.
+            log.warning(
+                f"Offline context doldu — token taşması riski! "
+                f"prompt={prompt_tokens} token, n_ctx={context_size}, "
+                f"kalan={remaining_space}. Online fallback devreye giriyor."
             )
             return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
 
@@ -547,8 +571,15 @@ class Translator:
                 "latency_ms": latency,
                 "engine": "llama-cpp (local)"
             }
-        except Exception as e:
-            print(f"\n[KRİTİK HATA] Offline Çeviri Basarisiz: {e}")
+        except Exception:
+            # GENEL OFFLINE HATASI ───────────────────────────────────────────────────────
+            # exc_info=True → tam traceback log dosyasına gider.
+            # "Requested tokens exceed context window" gibi sessiz hatalar
+            # artık izlenebilir ve kaybolmaz.
+            log.error(
+                "Offline çeviri başarısız — tam hata izİ aşağıda:",
+                exc_info=True
+            )
             return {
                 "translation": "[ÇEVİRİ HATASI]",
                 "latency_ms": 0,

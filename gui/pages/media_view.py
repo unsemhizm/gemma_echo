@@ -478,14 +478,14 @@ class MediaView(ctk.CTkFrame):
         src_disp = lang_map_tr.get(src_name, src_name) if ui_lang == "tr" else src_name
         tgt_disp = lang_map_tr.get(tgt_name, tgt_name) if ui_lang == "tr" else tgt_name
         
-        src_label_text = f"{src_disp} Transkript (STT)" if ui_lang == "tr" else f"{src_disp} Transcript (STT)"
-        tgt_label_text = f"{tgt_disp} Çeviri" if ui_lang == "tr" else f"{tgt_disp} Translation"
+        src_label_text = t("transcript_label", src_disp)
+        tgt_label_text = t("translation_label", tgt_disp)
         
         self._src_lbl.configure(text=src_label_text)
         self._tgt_lbl.configure(text=tgt_label_text)
         
-        btn_src_text = f"{src_code} Kaydet" if ui_lang == "tr" else f"Save {src_code}"
-        btn_tgt_text = f"{tgt_code} Kaydet" if ui_lang == "tr" else f"Save {tgt_code}"
+        btn_src_text = t("save_source_button_label", src_code)
+        btn_tgt_text = t("save_target_button_label", tgt_code)
         
         self._btn_save_src.configure(text=btn_src_text)
         self._btn_save_tgt.configure(text=btn_tgt_text)

@@ -2,9 +2,12 @@ import sys
 import os
 import time
 import subprocess
+from core.logger import get_logger
 from stt.transcriber import Transcriber
 from llm.translator import Translator
 from tts.synthesizer import Synthesizer
+
+log = get_logger(__name__)
 
 
 class Orchestrator:
@@ -30,9 +33,9 @@ class Orchestrator:
         Gemma Echo Orkestra Sefi — v8 Quad-State.
         4 calisma modu arasinda guvenli gecis yonetimi saglar.
         """
-        print("\n" + "="*50)
-        print("[SISTEM] GEMMA ECHO ORKESTRA SEFI v8 BASLATILIYOR")
-        print("="*50)
+        log.info("=" * 50)
+        log.info("GEMMA ECHO ORKESTRA ŞEFI v8 BAŞLATILIYOR")
+        log.info("=" * 50)
 
         self.transcriber = transcriber
         self.translator = translator
@@ -45,7 +48,7 @@ class Orchestrator:
         # Baslangic modunu konfigure et
         self.set_mode(initial_mode)
 
-        print("[SISTEM] Orkestra Sefi hazir!")
+        log.info("Orkestra Şefi hazır!")
 
     # ═══════════════════════════════════════════════════════════
     # VRAM MONITORU — ASCII Bar
@@ -81,32 +84,27 @@ class Orchestrator:
     # ═══════════════════════════════════════════════════════════
 
     def warm_up(self):
-        """API baglantilarini ve GPU CUDA kernellarini isitir.
-        Ilk process() cagrisinin hizli olmasi icin baslangicta cagrilir.
+        """API bağlantılarını ve GPU CUDA kernellarını ısıtır.
+        İlk process() çağrısının hızlı olması için başlangıçta çağrılır."""
+        log.info("Modeller ısıtılıyor...")
 
-        Isitma sirasi:
-          1. STT GPU  — sessiz dummy inference ile CUDA kernel derleme
-          2. LLM API  — Gemini/Groq baglanti ve kimlik dogrulama
-        """
-        print("[SISTEM] Modeller isitiliyor...")
-
-        # 1. STT GPU isitma (sadece lokal modlarda; cloud_auto'da atlanir)
+        # 1. STT GPU ısıtma
         try:
             self.transcriber.warm_up()
-        except Exception as e:
-            print(f"[UYARI] STT isitma hatasi (kritik degil): {e}")
+        except Exception:
+            log.warning("STT ısıtma hatası (kritik değil).", exc_info=True)
 
-        # 2. LLM API isitma (baglanti ve auth on-yukleme)
+        # 2. LLM API ısıtma
         try:
             self.translator.translate("Merhaba")
-        except Exception as e:
-            print(f"[UYARI] LLM isitma hatasi (kritik degil): {e}")
+        except Exception:
+            log.warning("LLM ısıtma hatası (kritik değil).", exc_info=True)
 
-        print("[SISTEM] Isitma tamamlandi.")
+        log.info("Isıtma tamamlandı.")
 
     def _handle_llm_vram_failure(self):
-        """Yerel GGUF VRAM'e sigmadi; ceviriyi bulut motoruna kaydir (API zaten zorunlu)."""
-        print("[SISTEM] Yerel LLM yuklenemedi (VRAM). Ceviri motoru buluta kaydiriliyor.")
+        """Yerel GGUF VRAM'e sığmadı; çeviriyi bulut motoruna kaydır."""
+        log.error("Yerel LLM yüklenemedi (VRAM). Çeviri motoru buluta kaydırılıyor.")
         self.translator.set_mode("online")
         self.translator.unload_local_model()
 
@@ -123,11 +121,10 @@ class Orchestrator:
         old_mode = self.current_mode
 
         if old_mode == mode:
-            print(f"[SISTEM] Zaten '{mode}' modunda.")
+            log.debug(f"Zaten '{mode}' modunda, geçiş atlanıyor.")
             return
 
-        print(f"\n[SISTEM] Mod gecisi: {old_mode or 'INIT'} -> {mode}")
-        print("-" * 40)
+        log.info(f"Mod geçişi: {old_mode or 'INIT'} -> {mode}")
 
         # Hedef moda gore konfigure et
         if mode == "online":
@@ -152,9 +149,8 @@ class Orchestrator:
             self._configure_custom()
 
         self.current_mode = mode
-        print(f"[SISTEM] Mod gecisi tamamlandi: {mode}")
+        log.info(f"Mod geçişi tamamlandı: {mode}")
         self._print_vram()
-        print("-" * 40)
 
     # ─── MODE 1: ONLINE (Tam Bulut) ───────────────────────────
     def _configure_online(self):
@@ -304,7 +300,7 @@ class Orchestrator:
 
     def process(self, audio_path: str):
         """Uctan uca ses ceviri hatti. Hata yakalarsa _fallback() tetikler."""
-        print(f"\n[ORCHESTRATOR] Ses isleniyor ({self.current_mode}): {audio_path}")
+        log.info(f"Ses işleniyor ({self.current_mode}): {audio_path}")
         total_start = time.time()
 
         try:
@@ -319,41 +315,35 @@ class Orchestrator:
                 tgt_lang = self.config.get("language", "target", default="en")
                 src_name = self.config.get("language", "source_name", default="Turkish")
                 tgt_name = self.config.get("language", "target_name", default="English")
-                self.translator.set_persona(self.config.get("persona", default="none"))
+                self.translator.set_persona(self.config.get("persona", default="default"))
 
             # 1. STT (Speech-to-Text)
             stt_start = time.time()
             stt_result = self.transcriber.transcribe(audio_path, source_lang=src_lang)
 
-            # Gurultu kontrolu (esik 0.4: initial_prompt kaldirildiginda Whisper
-            # gercek konusma skorlarini daha dogru raporluyor)
+            # Gurultu kontrolu (esik 0.4)
             if stt_result.get("no_speech_prob", 0) > 0.4:
-                print("[ORCHESTRATOR] Gurultu algilandi, ceviri iptal edildi.")
+                log.debug("Gürültü algılandı, çeviri iptal edildi.")
                 return
 
             text_tr = stt_result.get("text", "")
             if not text_tr:
-                print("[ORCHESTRATOR] Bos metin dondu, ceviri iptal edildi.")
+                log.debug("Boş metin döndü, çeviri iptal edildi.")
                 return
 
             # Akilli Noktalama Filtresi — oksuruk / yutkunma / nefes false-positive engeli
-            # Kural: <=2 kelime VE sonda noktalama yok → iptal
-            # Istisna: sonda noktalama VARSA gonder (Evet., Tamam! vb.)
-            # NOT (Streaming Modu): Streaming chunker aktifken bu esigi len(_words) <= 1
-            # olarak esnet veya filtreyi tamamen devre disi birak; aksi halde tek kelimelik
-            # tepkiler ("Evet", "Hayir", "Tamam") yanlis positive olarak silinebilir.
             _words = text_tr.strip().split()
             _has_punct = text_tr.strip()[-1] in ".!?" if text_tr.strip() else False
             if len(_words) <= 2 and not _has_punct:
-                print(f"[ORCHESTRATOR] Kisa metin + noktalama yok ('{text_tr}') — false-positive, iptal edildi.")
+                log.debug(f"Kısa metin ('{text_tr}') — false-positive, iptal edildi.")
                 return
 
             stt_ms = int((time.time() - stt_start) * 1000)
-            print(f"[ORCHESTRATOR] STT Suresi: {stt_ms}ms | Metin: '{text_tr}'")
+            log.info(f"STT: {stt_ms}ms | '{text_tr}'")
 
             # 2. LLM (Ceviri) — Kayan Bellek (context) ile
             llm_result = self.translator.translate(
-                text_tr, 
+                text_tr,
                 context=self.history,
                 src_lang=src_lang,
                 tgt_lang=tgt_lang,
@@ -365,9 +355,9 @@ class Orchestrator:
 
             # Tum online motorlar basarisiz oldu → _fallback() tetikle
             if llm_result.get("engine") == "Failed":
-                raise RuntimeError("Tum online LLM katmanlari basarisiz (baglanti hatasi?).")
+                raise RuntimeError("Tüm online LLM katmanları başarısız (bağlantı hatası?).")
 
-            print(f"[ORCHESTRATOR] Ceviri: '{text_en}' | Motor: {llm_result.get('engine')} | {llm_ms}ms")
+            log.info(f"Çeviri: '{text_en}' | Motor: {llm_result.get('engine')} | {llm_ms}ms")
 
             # Kayan Bellegi guncelle — son 3 Turkce cumleyi tut
             self.history.append(text_tr)
@@ -377,7 +367,7 @@ class Orchestrator:
             tts_ms = self.synthesizer.speak(text_en, language=tgt_lang) or 0
 
             total_ms = int((time.time() - total_start) * 1000)
-            print(f"[ORCHESTRATOR] Islem tamamlandi. E2E: {total_ms}ms (STT:{stt_ms} + LLM:{llm_ms} + TTS:{tts_ms})")
+            log.info(f"E2E: {total_ms}ms (STT:{stt_ms} + LLM:{llm_ms} + TTS:{tts_ms})")
 
             if self.result_queue is not None:
                 self.result_queue.put({
@@ -391,11 +381,12 @@ class Orchestrator:
                     "error": None,
                 })
 
-        except Exception as e:
-            print(f"\n[ORCHESTRATOR] HATA YAKALANDI: {e}")
+        except Exception:
+            log.error("ORCHESTRATOR işlem hatası — fallback tetikleniyor.", exc_info=True)
             if self.result_queue is not None:
-                self.result_queue.put({"error": str(e)})
-            self._fallback(audio_path, src_lang=src_lang, tgt_lang=tgt_lang, 
+                import traceback
+                self.result_queue.put({"error": traceback.format_exc()})
+            self._fallback(audio_path, src_lang=src_lang, tgt_lang=tgt_lang,
                            src_name=src_name, tgt_name=tgt_name)
 
     # ═══════════════════════════════════════════════════════════
@@ -404,11 +395,11 @@ class Orchestrator:
 
     def process_inbound(self, audio_path: str):
         """
-        Karsı taraftan gelen sesi kullanicinin diline cevir.
-        TTS calmiyor — sadece Overlay'e gonderiyor.
-        Dil yonu process() ile tersinedir: target_lang -> source_lang
+        Karşı taraftan gelen sesi kullanıcının diline çevir.
+        TTS çalmıyor — sadece Overlay'e gönderiyor.
+        Dil yönü process() ile tersinedir: target_lang -> source_lang
         """
-        print(f"\n[INBOUND] Karsi taraf isleniyor: {audio_path}")
+        log.info(f"[Inbound] İşleniyor: {audio_path}")
         total_start = time.time()
 
         try:
@@ -429,24 +420,24 @@ class Orchestrator:
             stt_result = self.transcriber.transcribe(audio_path, source_lang=src_lang)
 
             if stt_result.get("no_speech_prob", 0) > 0.4:
-                print("[INBOUND] Gurultu algilandi, isleme iptal.")
+                log.debug("[Inbound] Gürültü algılandı, işleme iptal.")
                 return
 
             text_foreign = stt_result.get("text", "").strip()
             if not text_foreign:
-                print("[INBOUND] Bos metin, isleme iptal.")
+                log.debug("[Inbound] Boş metin, işleme iptal.")
                 return
 
             _words = text_foreign.split()
             _has_punct = text_foreign[-1] in ".!?" if text_foreign else False
             if len(_words) <= 2 and not _has_punct:
-                print(f"[INBOUND] Kisa metin ('{text_foreign}') — false-positive, iptal.")
+                log.debug(f"[Inbound] Kısa metin ('{text_foreign}') — false-positive, iptal.")
                 return
 
             stt_ms = int((time.time() - stt_start) * 1000)
-            print(f"[INBOUND] STT: {stt_ms}ms | '{text_foreign}'")
+            log.info(f"[Inbound] STT: {stt_ms}ms | '{text_foreign}'")
 
-            # 2. LLM — karsi tarafin metnini kullanicinin diline cevir
+            # 2. LLM — karşı tarafın metnini kullanıcının diline çevir
             llm_result = self.translator.translate(
                 text_foreign,
                 context=[],
@@ -458,7 +449,7 @@ class Orchestrator:
             text_native = llm_result.get("translation", "")
             llm_ms = llm_result.get("latency_ms", 0)
 
-            print(f"[INBOUND] Ceviri: '{text_native}' | {llm_ms}ms")
+            log.info(f"[Inbound] Çeviri: '{text_native}' | {llm_ms}ms")
 
             total_ms = int((time.time() - total_start) * 1000)
 
@@ -476,29 +467,29 @@ class Orchestrator:
                     "error":      None,
                 })
 
-        except Exception as e:
-            print(f"[INBOUND HATA] {e}")
+        except Exception:
+            log.error("[Inbound] İşlem hatası.", exc_info=True)
             if self.result_queue is not None:
-                self.result_queue.put({"error": f"[Inbound] {e}"})
+                import traceback
+                self.result_queue.put({"error": f"[Inbound] {traceback.format_exc()}"})
 
     # ═══════════════════════════════════════════════════════════
-    # FALLBACK — Her Moddan Offline'a Guvenli Gecis
+    # FALLBACK — Her Moddan Offline'a Güvenli Geçiş
     # ═══════════════════════════════════════════════════════════
 
-    def _fallback(self, audio_path: str, src_lang="tr", tgt_lang="en", 
+    def _fallback(self, audio_path: str, src_lang="tr", tgt_lang="en",
                   src_name="Turkish", tgt_name="English"):
-        """Herhangi bir moddan offline (survival) moduna guvenli gecis.
-        Internet kopuklugu veya API hatalarinda tetiklenir."""
-        print("\n" + "!"*50)
-        print("[SISTEM] BAGLANTI HATASI! OFFLINE (HAYATTA KALMA) MODUNA GECILIYOR...")
-        print(f"[SISTEM] Onceki mod: {self.current_mode}")
-        print("!"*50)
+        """Herhangi bir moddan offline (survival) moduna güvenli geçiş.
+        İnternet kopukluğu veya API hatalarında tetiklenir."""
+        log.critical(
+            f"BAĞLANTI HATASI! OFFLINE (HAYATTA KALMA) MODUNA GEÇİLİYOR "
+            f"— önceki mod: {self.current_mode}"
+        )
 
         # Offline moda gec (VRAM guvenlik adimlarini set_mode yonetir)
         self.set_mode("offline")
 
-        # Islemi offline olarak tekrar dene
-        print(f"[ORCHESTRATOR] Offline isleniyor: {audio_path}")
+        log.info(f"Offline işlenecek: {audio_path}")
 
         try:
             stt_result = self.transcriber.transcribe(audio_path, source_lang=src_lang)
@@ -508,17 +499,17 @@ class Orchestrator:
                 if not self.translator.load_local_model():
                     self._handle_llm_vram_failure()
                 llm_result = self.translator.translate(
-                    text_tr, 
-                    src_lang=src_lang, 
+                    text_tr,
+                    src_lang=src_lang,
                     tgt_lang=tgt_lang,
                     src_name=src_name,
                     tgt_name=tgt_name
                 )
                 text_en = llm_result.get("translation", "")
-                print(f"[ORCHESTRATOR] Offline Ceviri: '{text_en}'")
+                log.info(f"Offline Çeviri: '{text_en}'")
 
                 tts_ms = self.synthesizer.speak(text_en) or 0
-                print("[ORCHESTRATOR] Offline Islem tamamlandi.")
+                log.info("Offline işlem tamamlandı.")
 
                 if self.result_queue is not None:
                     self.result_queue.put({
@@ -531,6 +522,9 @@ class Orchestrator:
                         "tts_ms": tts_ms,
                         "error": None,
                     })
-        except Exception as e:
-            print(f"[KRITIK HATA] Offline ceviri de basarisiz oldu: {e}")
-            print("[SISTEM] Yerel model veya XTTS basarisiz. Dongu devam ediyor.")
+        except Exception:
+            log.critical(
+                "Offline çeviri de başarısız oldu — tüm katmanlar çöktü!",
+                exc_info=True
+            )
+

@@ -251,8 +251,8 @@ class TextView(ctk.CTkFrame):
         src_disp = lang_map_tr.get(src_name, src_name) if ui_lang == "tr" else src_name
         tgt_disp = lang_map_tr.get(tgt_name, tgt_name) if ui_lang == "tr" else tgt_name
         
-        in_label_text = f"KAYNAK METİN ({src_disp.upper()})" if ui_lang == "tr" else f"SOURCE TEXT ({src_disp.upper()})"
-        out_label_text = f"HEDEF METİN ({tgt_disp.upper()})" if ui_lang == "tr" else f"TARGET TEXT ({tgt_disp.upper()})"
+        in_label_text = t("source_text_label", src_disp.upper())
+        out_label_text = t("target_text_label", tgt_disp.upper())
         
         self._in_title_lbl.configure(text=in_label_text)
         self._out_title_lbl.configure(text=out_label_text)

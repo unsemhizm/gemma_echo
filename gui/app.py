@@ -1,18 +1,3 @@
-"""
-Gemma Echo GUI — Ana Koordinatör
-
-Baslatma sirasi:
-  1. ConfigManager yukle
-  2. first_run == True  → SetupWizard goster, tamamlaninca devam et
-  3. Orchestrator + backend bilesenleri yukle (arka planda)
-  4. Overlay penceresini goster
-  5. Mod / ayar degisikliklerini ConfigManager uzerinden yonet
-
-Kullanim:
-    python -m gui.app          (proje kokunden)
-    python gui/app.py          (dogrudan)
-"""
-
 import os
 import sys
 import queue
@@ -27,6 +12,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# ── Merkezi loglama sistemi — her şeyden önce başlat ─────────────────────────
+from core.logger import setup_logging, get_logger
+setup_logging()
+_app_log = get_logger("gemma_echo.gui")
+# ─────────────────────────────────────────────────────────────────────────────
 
 from gui.config        import ConfigManager
 from gui.pages.overlay import Overlay
@@ -72,21 +63,14 @@ class GemmaEchoApp:
         self._backend_thread                   = None
         self._ptt_hotkeys_registered          = False  # Space/Alt sadece canlı kayıt aktifken
 
-        self._init_logging()
-
-    def _init_logging(self):
-        log_path = os.path.join(_ROOT, "gemma_echo.log")
-        handlers = [
-            logging.FileHandler(log_path, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ]
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-            handlers=handlers,
-        )
-        self.logger = logging.getLogger("GemmaEcho")
+        # Modül düzeyindeki logger — _init_logging() artık gerekli değil
+        self.logger = get_logger("gemma_echo.app")
         self.logger.info("Gemma Echo GUI başlatılıyor")
+
+        self._install_exception_hooks()
+
+    def _install_exception_hooks(self):
+        """Ana ve arka plan thread kancalarını kurar."""
 
         def excepthook(exc_type, exc_value, exc_traceback):
             if issubclass(exc_type, KeyboardInterrupt):
@@ -104,7 +88,7 @@ class GemmaEchoApp:
         if self._main:
             try:
                 self._main.after(0, lambda: self._show_error_dialog(
-                    "Beklenmeyen Hata",
+                    t("unexpected_error_title"),
                     message
                 ))
             except Exception:
@@ -116,7 +100,7 @@ class GemmaEchoApp:
         if self._main:
             try:
                 self._main.after(0, lambda: self._show_error_dialog(
-                    "Arka Plan Hatası",
+                    t("background_error_title"),
                     message
                 ))
             except Exception:

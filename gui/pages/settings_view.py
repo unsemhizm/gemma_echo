@@ -198,7 +198,7 @@ class SettingsView(ctk.CTkFrame):
         cpu_c   = hw.get("cpu_cores", "?")
         ctk.CTkLabel(
             hw_card,
-            text=f"GPU: {gpu_n}   RAM: {ram_gb} GB   CPU: {cpu_c} cekirdek",
+            text=t("hardware_info_format", gpu_n, ram_gb, cpu_c),
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(anchor="w")
 
@@ -322,7 +322,7 @@ class SettingsView(ctk.CTkFrame):
         src_row = ctk.CTkFrame(lang_card, fg_color="transparent")
         src_row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
-            src_row, text="Kaynak Dil:", width=100,
+            src_row, text=t("source_language_label"), width=100,
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
         cur_src = self.cfg.get("language", "source", default="tr")
@@ -339,7 +339,7 @@ class SettingsView(ctk.CTkFrame):
         tgt_row = ctk.CTkFrame(lang_card, fg_color="transparent")
         tgt_row.pack(fill="x")
         ctk.CTkLabel(
-            tgt_row, text="Hedef Dil:", width=100,
+            tgt_row, text=t("target_language_label"), width=100,
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
         cur_tgt = self.cfg.get("language", "target", default="en")
@@ -360,7 +360,7 @@ class SettingsView(ctk.CTkFrame):
         mic_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
         mic_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
-            mic_hdr, text="Mikrofon (Sen konusurken):",
+            mic_hdr, text=t("microphone_label"),
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
 
@@ -380,7 +380,7 @@ class SettingsView(ctk.CTkFrame):
         loop_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
         loop_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
-            loop_hdr, text="Loopback Cihazi (Karsi tarafi dinlerken):",
+            loop_hdr, text=t("loopback_device_label"),
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
 
@@ -399,7 +399,7 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             dev_card,
-            text="Zoom/Meet cikisini dinlemek icin hoparlor cihazini secin.",
+            text=t("loopback_hint_text"),
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).pack(anchor="w")
 
@@ -408,7 +408,7 @@ class SettingsView(ctk.CTkFrame):
         sep.pack(fill="x", pady=(12, 10))
 
         ctk.CTkLabel(
-            dev_card, text="Klavye Kisayollari:",
+            dev_card, text=t("keyboard_shortcuts_label"),
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["text"], anchor="w"
         ).pack(anchor="w", pady=(0, 6))
 
@@ -416,14 +416,14 @@ class SettingsView(ctk.CTkFrame):
         out_row = ctk.CTkFrame(dev_card, fg_color="transparent")
         out_row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
-            out_row, text="Sen konusurken:", width=160,
+            out_row, text=t("outbound_shortcut_label"), width=160,
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
         self._hotkey_out_entry = ctk.CTkEntry(
             out_row, height=32, corner_radius=8, width=140,
             font=ctk.CTkFont(size=11),
             fg_color=_C["surface2"], border_color=_C["border"],
-            placeholder_text="ornek: space, f9, ctrl+shift"
+            placeholder_text=t("shortcut_example_outbound")
         )
         self._hotkey_out_entry.insert(
             0, self.cfg.get("inbound", "hotkey_outbound", default="space")
@@ -434,14 +434,14 @@ class SettingsView(ctk.CTkFrame):
         in_row = ctk.CTkFrame(dev_card, fg_color="transparent")
         in_row.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
-            in_row, text="Karsi tarafi dinlerken:", width=160,
+            in_row, text=t("inbound_shortcut_label"), width=160,
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(side="left")
         self._hotkey_in_entry = ctk.CTkEntry(
             in_row, height=32, corner_radius=8, width=140,
             font=ctk.CTkFont(size=11),
             fg_color=_C["surface2"], border_color=_C["border"],
-            placeholder_text="ornek: alt, f10, ctrl+alt"
+            placeholder_text=t("shortcut_example_inbound")
         )
         self._hotkey_in_entry.insert(
             0, self.cfg.get("inbound", "hotkey_inbound", default="alt")
@@ -449,7 +449,7 @@ class SettingsView(ctk.CTkFrame):
         self._hotkey_in_entry.pack(side="left")
 
         ctk.CTkButton(
-            dev_card, text="Tuslari Kaydet ve Uygula",
+            dev_card, text=t("save_shortcuts_button"),
             height=32, corner_radius=8,
             fg_color=_C["blue"], hover_color="#4080d0",
             font=ctk.CTkFont(size=11, weight="bold"),
@@ -493,7 +493,7 @@ class SettingsView(ctk.CTkFrame):
         entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         ctk.CTkButton(
-            row, text="Al \u2192", width=60, height=32, corner_radius=8,
+            row, text=t("copy_button_text"), width=60, height=32, corner_radius=8,
             fg_color=_C["surface2"],
             command=lambda u=url: webbrowser.open(u)
         ).pack(side="left", padx=(0, 4))
