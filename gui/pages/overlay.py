@@ -304,14 +304,14 @@ class Overlay(ctk.CTkToplevel):
             self._tr_label.configure(text=text_tr, text_color=_C["inbound_text"])
             self._en_label.configure(text=text_en, text_color=_C["white"])
             self._dot.configure(text_color=_C["inbound_text"])
-            self._dir_label.configure(text="KARSI TARAF", text_color=_C["inbound_text"])
+            self._dir_label.configure(text=t("overlay_inbound_label"), text_color=_C["inbound_text"])
             status_color = _C["inbound_text"]
         else:
             # Sen konusuyorsun — mavi tema
             self._tr_label.configure(text=text_tr, text_color=_C["gray"])
             self._en_label.configure(text=text_en, text_color=_C["white"])
             self._dot.configure(text_color=_C["green"])
-            self._dir_label.configure(text="SEN", text_color=_C["outbound_text"])
+            self._dir_label.configure(text=t("overlay_outbound_label"), text_color=_C["outbound_text"])
             status_color = _C["green"]
 
         # Durum cubugu

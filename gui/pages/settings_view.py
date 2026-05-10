@@ -366,7 +366,7 @@ class SettingsView(ctk.CTkFrame):
 
         mic_devices   = self._get_input_devices()
         mic_names     = [d[1] for d in mic_devices]
-        cur_mic_name  = self.cfg.get("recording", "mic_device_name", default="Varsayilan")
+        cur_mic_name  = self.cfg.get("recording", "mic_device_name", default=t("default_device"))
         self._mic_combo = ctk.CTkComboBox(
             dev_card, values=mic_names,
             height=34, corner_radius=10, font=ctk.CTkFont(size=11),
@@ -388,13 +388,13 @@ class SettingsView(ctk.CTkFrame):
         loopback_names    = [d[1] for d in loopback_devices]
         cur_loop_name     = self.cfg.get("inbound", "loopback_device_name", default="")
         self._loop_combo  = ctk.CTkComboBox(
-            dev_card, values=loopback_names if loopback_names else ["Loopback bulunamadi"],
+            dev_card, values=loopback_names if loopback_names else [t("loopback_not_found")],
             height=34, corner_radius=10, font=ctk.CTkFont(size=11),
             fg_color=_C["surface2"], border_color=_C["border"],
             command=self._on_loopback_select
         )
         matched = next((n for n in loopback_names if cur_loop_name and cur_loop_name.lower() in n.lower()), None)
-        self._loop_combo.set(matched or (loopback_names[0] if loopback_names else "Loopback bulunamadi"))
+        self._loop_combo.set(matched or (loopback_names[0] if loopback_names else t("loopback_not_found")))
         self._loop_combo.pack(fill="x", pady=(0, 4))
 
         ctk.CTkLabel(
@@ -552,21 +552,21 @@ class SettingsView(ctk.CTkFrame):
         import sounddevice as sd
         try:
             devices = sd.query_devices()
-            outputs = [(None, "Default")]
+            outputs = [(None, t("default_device"))]
             for i, d in enumerate(devices):
                 if d['max_output_channels'] > 0:
                     outputs.append((i, d['name']))
             return outputs
         except Exception as e:
             print(f"[HATA] Ses cihazlari listelenemedi: {e}")
-            return [(None, "Default")]
+            return [(None, t("default_device"))]
 
     def _get_input_devices(self):
         """Sistemdeki mikrofon (giris) cihazlarini listeler."""
         import sounddevice as sd
         try:
             devices = sd.query_devices()
-            inputs = [(None, "Varsayilan")]
+            inputs = [(None, t("default_device"))]
             for i, d in enumerate(devices):
                 if d['max_input_channels'] > 0:
                     try:
@@ -579,7 +579,7 @@ class SettingsView(ctk.CTkFrame):
             return inputs
         except Exception as e:
             print(f"[HATA] Mikrofon listelenemedi: {e}")
-            return [(None, "Varsayilan")]
+            return [(None, t("default_device"))]
 
     def _get_loopback_devices(self):
         """WASAPI Loopback cihazlarini listeler (soundcard kullanir)."""

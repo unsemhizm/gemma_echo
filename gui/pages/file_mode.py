@@ -26,6 +26,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from gui.config import ConfigManager
+from gui.i18n import t
 
 _C = {
     "bg":     "#0d1117",
@@ -68,7 +69,7 @@ class FileModeWindow(ctk.CTkToplevel):
         self._processing  = False
         self._tmp_wav     = None    # video'dan ayıklanan geçici WAV
 
-        self.title("Gemma Echo — Dosya & Medya Çevirisi")
+        self.title(f"{t('app_name')} — {t('file_mode_title')}")
         self.geometry("820x620")
         self.resizable(True, True)
         self.minsize(700, 500)
@@ -106,11 +107,11 @@ class FileModeWindow(ctk.CTkToplevel):
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         ctk.CTkLabel(
-            hdr, text="Dosya & Medya Çevirisi",
+            hdr, text=t("file_mode_title"),
             font=ctk.CTkFont(size=15, weight="bold"), text_color="white"
         ).pack(side="left", padx=20, pady=12)
         ctk.CTkLabel(
-            hdr, text="ses · video · transkript · çeviri",
+            hdr, text=t("file_mode_subtitle"),
             font=ctk.CTkFont(size=10), text_color="#aabbcc"
         ).pack(side="left", padx=4, pady=16)
 
@@ -133,19 +134,19 @@ class FileModeWindow(ctk.CTkToplevel):
 
         self._file_entry = ctk.CTkEntry(
             bar, width=440, height=32,
-            placeholder_text="Ses veya video dosyası seçin (.wav .mp3 .mp4 .mkv ...)",
+            placeholder_text=t("select_file"),
             font=ctk.CTkFont(size=11)
         )
         self._file_entry.pack(side="left", padx=(16, 8), pady=10)
 
         ctk.CTkButton(
-            bar, text="Gözat", width=80, height=32,
+            bar, text=t("browse"), width=80, height=32,
             fg_color=_C["card"], hover_color=_C["border"],
             command=self._browse
         ).pack(side="left", padx=(0, 8))
 
         self._btn_process = ctk.CTkButton(
-            bar, text="▶  Çevir", width=100, height=32,
+            bar, text=t("translate"), width=100, height=32,
             fg_color=_C["blue"],
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._start_processing
@@ -153,7 +154,7 @@ class FileModeWindow(ctk.CTkToplevel):
         self._btn_process.pack(side="left", padx=(0, 8))
 
         self._btn_cancel = ctk.CTkButton(
-            bar, text="■ İptal", width=80, height=32,
+            bar, text=f"■ {t('cancel')}", width=80, height=32,
             fg_color=_C["red"], hover_color="#7f1d1d",
             state="disabled",
             command=self._cancel
@@ -170,7 +171,7 @@ class FileModeWindow(ctk.CTkToplevel):
         self._progress.pack(side="left", fill="x", expand=True, pady=14)
 
         self._prog_label = ctk.CTkLabel(
-            prog_frame, text="Hazır",
+            prog_frame, text=t("ready"),
             font=ctk.CTkFont(size=10), text_color=_C["gray"], width=160, anchor="e"
         )
         self._prog_label.pack(side="left", padx=(10, 0))
@@ -184,13 +185,13 @@ class FileModeWindow(ctk.CTkToplevel):
 
         # TR başlık
         ctk.CTkLabel(
-            mid, text="Türkçe Transkript (STT)",
+            mid, text=t("tr_transcript"),
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["gray"]
         ).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
 
         # EN başlık
         ctk.CTkLabel(
-            mid, text="İngilizce Çeviri",
+            mid, text=t("en_translation"),
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["blue"]
         ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
 
@@ -216,19 +217,19 @@ class FileModeWindow(ctk.CTkToplevel):
         bot.pack_propagate(False)
 
         ctk.CTkButton(
-            bot, text="TR Kaydet", width=110, height=30,
+            bot, text=t("save_tr"), width=110, height=30,
             fg_color=_C["card"], hover_color=_C["border"],
             command=lambda: self._save_text("tr")
         ).pack(side="left", padx=(16, 6), pady=7)
 
         ctk.CTkButton(
-            bot, text="EN Kaydet", width=110, height=30,
+            bot, text=t("save_en"), width=110, height=30,
             fg_color=_C["card"], hover_color=_C["border"],
             command=lambda: self._save_text("en")
         ).pack(side="left", padx=(0, 6), pady=7)
 
         ctk.CTkButton(
-            bot, text="İkisini de Kaydet", width=140, height=30,
+            bot, text=t("save_both"), width=140, height=30,
             fg_color=_C["blue"],
             command=lambda: (self._save_text("tr"), self._save_text("en"))
         ).pack(side="left", pady=7)
@@ -243,12 +244,12 @@ class FileModeWindow(ctk.CTkToplevel):
 
     def _browse(self):
         path = filedialog.askopenfilename(
-            title="Ses veya Video Dosyası Seç",
+            title=t("select_file"),
             filetypes=[
-                ("Tüm medya",   "*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.mp4 *.mkv *.avi *.mov *.webm"),
-                ("Ses",         "*.wav *.mp3 *.ogg *.flac *.m4a *.aac"),
-                ("Video",       "*.mp4 *.mkv *.avi *.mov *.webm *.ts"),
-                ("Tüm dosyalar","*.*"),
+                (t("media_filetypes_all"),   "*.wav *.mp3 *.ogg *.flac *.m4a *.aac *.mp4 *.mkv *.avi *.mov *.webm"),
+                (t("media_filetypes_audio"), "*.wav *.mp3 *.ogg *.flac *.m4a *.aac"),
+                (t("media_filetypes_video"), "*.mp4 *.mkv *.avi *.mov *.webm *.ts"),
+                (t("media_filetypes_any"),  "*.*"),
             ]
         )
         if path:
@@ -262,7 +263,7 @@ class FileModeWindow(ctk.CTkToplevel):
             box.delete("0.0", "end")
             box.configure(state="disabled")
         self._progress.set(0)
-        self._prog_label.configure(text="Hazır", text_color=_C["gray"])
+        self._prog_label.configure(text=t("ready"), text_color=_C["gray"])
         self._elapsed_label.configure(text="")
 
     # ── İşlem Başlatma ────────────────────────────────────────────────────────
@@ -270,25 +271,25 @@ class FileModeWindow(ctk.CTkToplevel):
     def _start_processing(self):
         path = self._file_entry.get().strip()
         if not path:
-            messagebox.showwarning("Dosya Seçilmedi", "Lütfen önce bir dosya seçin.")
+            messagebox.showwarning(t("file_not_selected"), t("select_file_first"))
             return
 
         if not os.path.exists(path):
-            messagebox.showerror("Dosya Bulunamadı", f"Dosya mevcut değil:\n{path}")
+            messagebox.showerror(t("file_not_found"), t("file_exists_error", path))
             return
 
         ext = os.path.splitext(path)[1].lower()
         if ext not in _ALL_EXT:
             messagebox.showwarning(
-                "Desteklenmeyen Format",
-                f"'{ext}' formatı desteklenmiyor.\nDesteklenenler: {', '.join(sorted(_ALL_EXT))}"
+                t("unsupported_format"),
+                t("unsupported_ext", ext, ", ".join(sorted(_ALL_EXT)))
             )
             return
 
         if not self._backend_available():
             messagebox.showwarning(
-                "Backend Hazır Değil",
-                "STT/LLM modelleri henüz yükleniyor.\nBir dakika bekleyip tekrar deneyin."
+                t("backend_not_ready_models"),
+                t("models_still_loading")
             )
             return
 
@@ -303,7 +304,7 @@ class FileModeWindow(ctk.CTkToplevel):
 
     def _cancel(self):
         self._processing = False
-        self._set_progress(0, "İptal edildi", _C["yellow"])
+        self._set_progress(0, t("cancelled"), _C["yellow"])
         self._btn_process.configure(state="normal")
         self._btn_cancel.configure(state="disabled")
 
@@ -330,13 +331,13 @@ class FileModeWindow(ctk.CTkToplevel):
 
             # ── 1. Video → WAV ────────────────────────────────────────
             if ext in _VIDEO_EXT:
-                self._set_progress(0.05, "Video'dan ses ayıklanıyor...", _C["yellow"])
+                self._set_progress(0.05, t("extracting_audio"), _C["yellow"])
                 wav_path, owns_temp = self._extract_audio(src_path)
                 if wav_path is None or not self._processing:
                     return
             elif ext != ".wav":
                 # MP3/OGG/FLAC → WAV dönüşümü
-                self._set_progress(0.05, "Ses dosyası dönüştürülüyor...", _C["yellow"])
+                self._set_progress(0.05, t("converting_audio"), _C["yellow"])
                 wav_path, owns_temp = self._convert_to_wav(src_path)
                 if wav_path is None or not self._processing:
                     return
@@ -346,19 +347,19 @@ class FileModeWindow(ctk.CTkToplevel):
             # ── 2. STT (Whisper) ──────────────────────────────────────
             if not self._processing:
                 return
-            self._set_progress(0.20, "Transkript oluşturuluyor (Whisper)...", _C["blue"])
+            self._set_progress(0.20, t("generating_transcript"), _C["blue"])
 
             transcriber = self.app._orchestrator.transcriber
             stt_result  = transcriber.transcribe(wav_path)
             text_tr     = stt_result.get("text", "").strip()
 
             if not text_tr:
-                self._set_progress(1.0, "Ses tanınamadı.", _C["red"])
+                self._set_progress(1.0, t("speech_not_recognized"), _C["red"])
                 return
 
             # TR metni hemen göster
             self._set_text(self._tr_box, text_tr, _C["gray"])
-            self._set_progress(0.55, "Çeviri yapılıyor...", _C["blue"])
+            self._set_progress(0.55, t("translating"), _C["blue"])
 
             # ── 3. LLM — uzun metin chunk'lara bölünür ────────────────
             if not self._processing:
@@ -374,13 +375,13 @@ class FileModeWindow(ctk.CTkToplevel):
             self._set_text(self._en_box, text_en, _C["white"])
 
             elapsed = time.time() - t0
-            self._set_progress(1.0, f"Tamamlandı  ✓", _C["green"])
+            self._set_progress(1.0, t("done_tick"), _C["green"])
             self.after(0, lambda: self._elapsed_label.configure(
-                text=f"Toplam süre: {elapsed:.1f}s", text_color=_C["dim"]
+                text=t("elapsed_seconds", f"{elapsed:.1f}"), text_color=_C["dim"]
             ))
 
         except Exception as e:
-            self._set_progress(0, f"Hata: {e}", _C["red"])
+            self._set_progress(0, t("error_message", e), _C["red"])
 
         finally:
             if owns_temp and wav_path and os.path.exists(wav_path):
@@ -423,10 +424,10 @@ class FileModeWindow(ctk.CTkToplevel):
                 )
                 if result.returncode == 0:
                     return out_path, True
-                self._set_progress(0, f"ffmpeg hatası: {result.stderr[-200:]}", _C["red"])
+                self._set_progress(0, f"{t('ffmpeg_error')}: {result.stderr[-200:]}", _C["red"])
                 return None, False
             except FileNotFoundError:
-                self._set_progress(0, "ffmpeg bulunamadı! Lütfen ffmpeg kurun.", _C["red"])
+                self._set_progress(0, t("ffmpeg_not_found"), _C["red"])
                 return None, False
 
     def _convert_to_wav(self, audio_path: str) -> tuple[str | None, bool]:
@@ -493,7 +494,7 @@ class FileModeWindow(ctk.CTkToplevel):
             progress = 0.55 + (0.40 * (i / total))
             self._set_progress(
                 progress,
-                f"Çeviri yapılıyor... ({i+1}/{total} bölüm)",
+                t("media_translate_progress", i+1, total),
                 _C["blue"]
             )
             result = translator.translate(chunk)
@@ -508,7 +509,7 @@ class FileModeWindow(ctk.CTkToplevel):
         text = box.get("0.0", "end").strip()
 
         if not text:
-            messagebox.showinfo("Boş", "Kaydedilecek metin yok.")
+            messagebox.showinfo(t("save_empty_title"), t("save_empty_message"))
             return
 
         src_path = self._file_entry.get().strip()
@@ -519,11 +520,11 @@ class FileModeWindow(ctk.CTkToplevel):
 
         out_dir = self.cfg.get("file_mode", "output_dir", default="")
         save_path = filedialog.asksaveasfilename(
-            title=f"{'Transkripti' if lang == 'tr' else 'Çeviriyi'} Kaydet",
+            title=t("save_as_transcript") if lang == "tr" else t("save_as_translation"),
             initialfile=default_name,
             initialdir=out_dir or os.path.expanduser("~"),
             defaultextension=".txt",
-            filetypes=[("Metin dosyası", "*.txt"), ("Tüm dosyalar", "*.*")]
+            filetypes=[(t("filetype_text"), "*.txt"), (t("filetype_all"), "*.*")]
         )
 
         if save_path:

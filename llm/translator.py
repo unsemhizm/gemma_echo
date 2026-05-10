@@ -99,6 +99,12 @@ class Translator:
         self._llm_vram_failed = False
         self.vram_issue_callback = None  # GUI uyarısı: () -> None
 
+        # ─── LoRA ADAPTÖR DURUMU ────────────────────────────────────────────────
+        # active_lora : set_lora() ile seçilen adaptör dosya yolu. None → LoRA yok.
+        # loaded_lora : VRAM'e fiilen yüklenmiş adaptör yolu. unload'da None olur.
+        self.active_lora: str | None = None
+        self.loaded_lora: str | None = None
+
         # Aktif persona — varsayılan "default" (hiçbir stil talimatı eklenmez).
         # Kullanıcı isteğe bağlı olarak bir persona seçebilir.
         # Geçerli değerler: "default" | "none" | "official" | "streamer" | "casual" | "literary"
@@ -156,21 +162,26 @@ class Translator:
         except Exception:
             pass
 
-    def load_local_model(self, context_size: int = 512) -> bool:
+    def load_local_model(self, context_size: int = 512, lora_path: str | None = None) -> bool:
         """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
         Zaten talep edilen bağlam boyutunda yüklüyse tekrar yüklemez (idempotent).
         Eğer farklı bir boyutta yüklüyse, önce eski modeli indirip yenisini yükler.
         Dönüş: başarı True; VRAM / OOM durumunda False."""
+        # Açık parametre yoksa self.active_lora'ya bak (set_lora() ile ayarlanır)
+        effective_lora = lora_path if lora_path is not None else self.active_lora
+
         if self.local_llm is not None:
-            if getattr(self, "loaded_n_ctx", 512) == context_size:
-                return True
-            else:
-                log.info(
-                    f"Farklı bağlam penceresi istendi "
-                    f"({getattr(self, 'loaded_n_ctx', 512)} -> {context_size}). "
-                    f"Yeniden yükleniyor..."
-                )
-                self.unload_local_model()
+            same_ctx  = getattr(self, "loaded_n_ctx", 512) == context_size
+            same_lora = self.loaded_lora == effective_lora
+            if same_ctx and same_lora:
+                return True   # zaten doğru konfigürasyonda yüklü — hiçbir şey yapma
+            parts = []
+            if not same_ctx:
+                parts.append(f"n_ctx {getattr(self, 'loaded_n_ctx', 512)} → {context_size}")
+            if not same_lora:
+                parts.append(f"lora {self.loaded_lora!r} → {effective_lora!r}")
+            log.info(f"Model yeniden yükleniyor ({', '.join(parts)}).")
+            self.unload_local_model()
 
         if self._llm_vram_failed:
             return False
@@ -200,9 +211,11 @@ class Translator:
                 model_path=self.local_model_path,
                 n_gpu_layers=-1,
                 n_ctx=context_size,
+                lora_path=effective_lora,   # None → adaptör yok; saf baz model
                 verbose=False,
             )
-            self.loaded_n_ctx = context_size
+            self.loaded_n_ctx  = context_size
+            self.loaded_lora   = effective_lora
         except Exception as e:
             self.local_llm = None
             cleanup_cuda_memory()
@@ -236,6 +249,7 @@ class Translator:
         del self.local_llm
         self.local_llm = None
         self._llm_vram_failed = False
+        self.loaded_lora = None   # VRAM boşaltılınca yüklü LoRA bilgisini sıfırla
         if hasattr(self, "loaded_n_ctx"):
             del self.loaded_n_ctx
         gc.collect()
@@ -261,6 +275,32 @@ class Translator:
         if mode == "offline":
             self._llm_vram_failed = False
         log.info(f"Translator modu değişti: {old_mode} -> {mode}")
+
+    def set_lora(self, adapter_path: str | None) -> None:
+        """LoRA adaptörünü etkinleştirir veya devre dışı bırakır.
+
+        adapter_path:
+            Dosya yolu (örn: ``"./lora/ja-emergency.bin"``) → adaptörü etkinleştirir.
+            ``None`` → LoRA devre dışı; saf baz model kullanılır.
+
+        Model halihazırda VRAM'de yüklüyse ve adaptör değiştiyse model
+        otomatik olarak VRAM'den kaldırılır. Bir sonraki translate() çağrısında
+        doğru LoRA ile yeniden yüklenir (warm-swap, ~2-5 sn).
+
+        Zaten aynı adaptör aktifse hiçbir şey yapmaz (idempotent).
+        """
+        if self.active_lora == adapter_path:
+            return
+
+        prev = self.active_lora
+        self.active_lora = adapter_path
+        log.info(f"LoRA adaptörü değişti: {prev!r} → {adapter_path!r}")
+
+        # Model yüklüyse ama adaptör değiştiyse → unload et.
+        # Bir sonraki translate() çağrısı doğru LoRA ile yeniden yükler.
+        if self.local_llm is not None and self.loaded_lora != adapter_path:
+            log.info("LoRA değişikliği — model VRAM'den kaldırılıyor (warm-swap).")
+            self.unload_local_model()
 
     # ═══════════════════════════════════════════════════════════
     # ANA ÇEVİRİ METODU (Yönlendirici)
