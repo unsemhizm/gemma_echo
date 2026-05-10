@@ -261,7 +261,7 @@ class SetupWizard(ctk.CTk):
         voice_frame.pack(fill="x", padx=32, pady=(0, 14))
 
         ctk.CTkLabel(
-            voice_frame, text="Voice ID",
+            voice_frame, text=t("elevenlabs_voice_id_label"),
             font=ctk.CTkFont(size=12, weight="bold"), text_color="white"
         ).grid(row=0, column=0, padx=16, pady=(14, 4), sticky="w")
 
@@ -407,7 +407,7 @@ class SetupWizard(ctk.CTk):
             lines.append(f"{service.capitalize():<13}: {status}")
 
         vid = self.cfg.get("elevenlabs_voice_id", default="")
-        lines.append(f"Voice ID     : {vid if vid else t('summary_voice_default')}")
+        lines.append(f"{t('elevenlabs_voice_id_label')} : {vid if vid else t('summary_voice_default')}")
         self._summary_label.configure(text="\n".join(lines))
 
 

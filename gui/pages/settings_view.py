@@ -219,7 +219,7 @@ class SettingsView(ctk.CTkFrame):
         self._voice_entry = ctk.CTkEntry(
             vr, height=34, corner_radius=10, font=ctk.CTkFont(size=11),
             fg_color=_C["surface2"], border_color=_C["border"],
-            placeholder_text="Voice ID"
+            placeholder_text=t("voice_id_placeholder")
         )
         vid = self.cfg.get("elevenlabs_voice_id", default="")
         if vid:
