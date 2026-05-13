@@ -147,7 +147,8 @@ def setup_logging(level: int = logging.DEBUG) -> None:
 
         # ── Gürültülü kütüphane loglarını sustur ─────────────────────────
         # llama-cpp, TTS ve httpx çok fazla DEBUG mesajı üretir
-        for noisy_lib in ("llama_cpp", "TTS", "httpx", "urllib3", "httpcore"):
+        for noisy_lib in ("llama_cpp", "TTS", "httpx", "urllib3", "httpcore",
+                          "pdfminer", "pdfplumber"):
             logging.getLogger(noisy_lib).setLevel(logging.WARNING)
 
         _is_configured = True

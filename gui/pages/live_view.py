@@ -100,6 +100,24 @@ class LiveView(ctk.CTkFrame):
         )
         self._btn_inbound.pack(side="left")
 
+        # ── Canli Telemetri (Dashboard) ───────────────────────────────
+        self._tel_card = _card(scroll, t("telemetry_title"))
+        
+        def _tel_row(parent, label_key):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(row, text=t(label_key), font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["dim"], width=100, anchor="w").pack(side="left")
+            val = ctk.CTkLabel(row, text=t("waiting_data"), font=ctk.CTkFont(size=11), text_color=_C["text"], anchor="w")
+            val.pack(side="left", fill="x", expand=True)
+            return val
+
+        self._lbl_tel_engine = _tel_row(self._tel_card, "telemetry_engine")
+        self._lbl_tel_persona = _tel_row(self._tel_card, "telemetry_persona")
+        self._lbl_tel_stt = _tel_row(self._tel_card, "telemetry_stt")
+        self._lbl_tel_llm = _tel_row(self._tel_card, "telemetry_llm")
+        self._lbl_tel_tts = _tel_row(self._tel_card, "telemetry_tts")
+        self._lbl_tel_e2e = _tel_row(self._tel_card, "telemetry_e2e")
+
         # ── Altyazi Kontrolu ──────────────────────────────────────────
         ov = _card(scroll, t("overlay_title"))
         ov_row = ctk.CTkFrame(ov, fg_color="transparent")
@@ -197,3 +215,35 @@ class LiveView(ctk.CTkFrame):
             self.app._overlay.deiconify()
             self.app._overlay.lift()
 
+    def on_leave(self):
+        """Kullanıcı farklı bir sayfaya geçtiğinde mikrofonu durdur."""
+        if self._recording:
+            self._stop()
+
+    def update_telemetry(self, data: dict):
+        # Hata durumunda pano stale kalmasın — motor adını "Hata" yaparız, diğerleri "—".
+        if data.get("error"):
+            self._lbl_tel_engine.configure(text=t("telemetry_error_engine") if t("telemetry_error_engine") != "telemetry_error_engine" else "Hata", text_color=_C["red"])
+            for lbl in (self._lbl_tel_stt, self._lbl_tel_llm, self._lbl_tel_tts, self._lbl_tel_e2e):
+                lbl.configure(text="—", text_color=_C["dim"])
+            return
+
+        engine = data.get("engine", "—")
+        stt_ms = data.get("stt_ms", 0)
+        llm_ms = data.get("llm_ms", 0)
+        tts_ms = data.get("tts_ms", 0)
+        e2e_ms = data.get("latency_ms", 0)
+        
+        eng_color = _C["blue"] if "API" in engine or "online" in engine.lower() else _C["green"]
+        if "llama" in engine.lower() or "local" in engine.lower() or "offline" in engine.lower():
+            eng_color = _C["green"]
+            
+        persona = self.cfg.get("persona", default="default")
+        persona_str = t(f"persona_{persona}") if persona != "default" and persona != "none" else t("persona_none")
+        
+        self._lbl_tel_engine.configure(text=engine, text_color=eng_color)
+        self._lbl_tel_persona.configure(text=persona_str)
+        self._lbl_tel_stt.configure(text=f"{stt_ms} ms" if stt_ms else "—")
+        self._lbl_tel_llm.configure(text=f"{llm_ms} ms" if llm_ms else "—")
+        self._lbl_tel_tts.configure(text=f"{tts_ms} ms" if tts_ms else "—")
+        self._lbl_tel_e2e.configure(text=f"{e2e_ms/1000:.2f} s" if e2e_ms else "—", text_color=_C["yellow"])

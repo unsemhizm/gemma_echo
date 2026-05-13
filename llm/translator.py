@@ -99,11 +99,16 @@ class Translator:
         self._llm_vram_failed = False
         self.vram_issue_callback = None  # GUI uyarısı: () -> None
 
-        # ─── LoRA ADAPTÖR DURUMU ────────────────────────────────────────────────
-        # active_lora : set_lora() ile seçilen adaptör dosya yolu. None → LoRA yok.
-        # loaded_lora : VRAM'e fiilen yüklenmiş adaptör yolu. unload'da None olur.
-        self.active_lora: str | None = None
-        self.loaded_lora: str | None = None
+        # ── Online kota cooldown (429 RESOURCE_EXHAUSTED) ─────────────────
+        # Free-tier kotası bittiğinde her chunk için 20-40s timeout beklemek
+        # yerine, online katmanı geçici olarak devre dışı bırak. Doküman çevirisinde
+        # kritik: chunk başına 30s ziyan etmek yerine direkt local'e in.
+        self._online_cooldown_until = 0.0   # epoch sn; time.time() < bu ise online skip
+        self._consecutive_quota_errors = 0   # ardışık 429 sayısı (cooldown'u büyütür)
+
+        
+        # Eşzamanlı istekleri sıraya almak ve paylaşılan state'i (system_prompt, quota vb.) korumak için kilit
+        self._translate_lock = threading.Lock()
 
         # Aktif persona — varsayılan "default" (hiçbir stil talimatı eklenmez).
         # Kullanıcı isteğe bağlı olarak bir persona seçebilir.
@@ -162,25 +167,16 @@ class Translator:
         except Exception:
             pass
 
-    def load_local_model(self, context_size: int = 512, lora_path: str | None = None) -> bool:
+    def load_local_model(self, context_size: int = 512) -> bool:
         """Yerel GGUF modelini llama-cpp ile VRAM'e yükler.
         Zaten talep edilen bağlam boyutunda yüklüyse tekrar yüklemez (idempotent).
         Eğer farklı bir boyutta yüklüyse, önce eski modeli indirip yenisini yükler.
         Dönüş: başarı True; VRAM / OOM durumunda False."""
-        # Açık parametre yoksa self.active_lora'ya bak (set_lora() ile ayarlanır)
-        effective_lora = lora_path if lora_path is not None else self.active_lora
-
         if self.local_llm is not None:
             same_ctx  = getattr(self, "loaded_n_ctx", 512) == context_size
-            same_lora = self.loaded_lora == effective_lora
-            if same_ctx and same_lora:
+            if same_ctx:
                 return True   # zaten doğru konfigürasyonda yüklü — hiçbir şey yapma
-            parts = []
-            if not same_ctx:
-                parts.append(f"n_ctx {getattr(self, 'loaded_n_ctx', 512)} → {context_size}")
-            if not same_lora:
-                parts.append(f"lora {self.loaded_lora!r} → {effective_lora!r}")
-            log.info(f"Model yeniden yükleniyor ({', '.join(parts)}).")
+            log.info(f"Model yeniden yükleniyor (n_ctx {getattr(self, 'loaded_n_ctx', 512)} → {context_size}).")
             self.unload_local_model()
 
         if self._llm_vram_failed:
@@ -211,11 +207,9 @@ class Translator:
                 model_path=self.local_model_path,
                 n_gpu_layers=-1,
                 n_ctx=context_size,
-                lora_path=effective_lora,   # None → adaptör yok; saf baz model
                 verbose=False,
             )
             self.loaded_n_ctx  = context_size
-            self.loaded_lora   = effective_lora
         except Exception as e:
             self.local_llm = None
             cleanup_cuda_memory()
@@ -249,7 +243,6 @@ class Translator:
         del self.local_llm
         self.local_llm = None
         self._llm_vram_failed = False
-        self.loaded_lora = None   # VRAM boşaltılınca yüklü LoRA bilgisini sıfırla
         if hasattr(self, "loaded_n_ctx"):
             del self.loaded_n_ctx
         gc.collect()
@@ -276,84 +269,50 @@ class Translator:
             self._llm_vram_failed = False
         log.info(f"Translator modu değişti: {old_mode} -> {mode}")
 
-    def set_lora(self, adapter_path: str | None) -> None:
-        """LoRA adaptörünü etkinleştirir veya devre dışı bırakır.
-
-        adapter_path:
-            Dosya yolu (örn: ``"./lora/ja-emergency.bin"``) → adaptörü etkinleştirir.
-            ``None`` → LoRA devre dışı; saf baz model kullanılır.
-
-        Model halihazırda VRAM'de yüklüyse ve adaptör değiştiyse model
-        otomatik olarak VRAM'den kaldırılır. Bir sonraki translate() çağrısında
-        doğru LoRA ile yeniden yüklenir (warm-swap, ~2-5 sn).
-
-        Zaten aynı adaptör aktifse hiçbir şey yapmaz (idempotent).
-        """
-        if self.active_lora == adapter_path:
-            return
-
-        prev = self.active_lora
-        self.active_lora = adapter_path
-        log.info(f"LoRA adaptörü değişti: {prev!r} → {adapter_path!r}")
-
-        # Model yüklüyse ama adaptör değiştiyse → unload et.
-        # Bir sonraki translate() çağrısı doğru LoRA ile yeniden yükler.
-        if self.local_llm is not None and self.loaded_lora != adapter_path:
-            log.info("LoRA değişikliği — model VRAM'den kaldırılıyor (warm-swap).")
-            self.unload_local_model()
 
     # ═══════════════════════════════════════════════════════════
     # ANA ÇEVİRİ METODU (Yönlendirici)
     # ═══════════════════════════════════════════════════════════
 
-    def translate(self, text_tr: str, context: list = [], src_lang="tr", tgt_lang="en",
+    def translate(self, text_tr: str, context: list = None, src_lang="tr", tgt_lang="en",
                   src_name="Turkish", tgt_name="English", prev_translation: str = "",
                   rolling_summary: str = "") -> dict:
         """
         Gelen metni hedef dile çevirir.
         Aktif moda göre online veya offline motora yönlendirir.
-
-        Args:
-            text_tr:          Çevrilecek metin
-            context:          Zamir çevirisi için önceki cümleler (opsiyonel)
-            src_lang:         Kaynak dil kodu (tr, en, ...)
-            tgt_lang:         Hedef dil kodu
-            src_name:         LLM promptu için kaynak dil adı
-            tgt_name:         LLM promptu için hedef dil adı
-            prev_translation: Bir önceki chunk'ın hedef dildeki (örn: İngilizce) çeviri çıktısı (Aşama 2)
-            rolling_summary:  Dökümanın şu ana kadarki yürüyen özeti (Aşama 2)
-
-        Returns:
-            dict: {"translation": str, "latency_ms": int, "engine": str}
         """
-        if not text_tr or len(text_tr.strip()) == 0:
-            return {"translation": "", "latency_ms": 0, "engine": "None"}
-
-        cultural_result, match_type = self._check_cultural(text_tr, src_lang, tgt_lang)
-
-        if match_type == "exact_fast":
-            return {"translation": cultural_result, "latency_ms": 0, "engine": "CulturalMap"}
-
-        hint = ""
-        if match_type == "exact_intent":
-            idiom, intent = cultural_result
-            hint = (
-                f"CULTURAL CONTEXT: The phrase '{idiom}' conveys the meaning of "
-                f"'{intent}'. Translate this naturally into {tgt_name}, matching the active style.\n\n"
-            )
-        elif match_type == "partial":
-            idiom, intent = cultural_result
-            hint = (
-                f"CULTURAL CONTEXT: The text contains '{idiom}' which conveys '{intent}'. "
-                f"Translate this expression naturally into {tgt_name} as part of the full sentence.\n\n"
-            )
-
-        # Sistem promptunu guncelle
-        self.system_prompt = self._build_system_prompt(src_name, tgt_name)
-
-        if self.mode == "online":
-            return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
-        return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+        if context is None:
+            context = []
+            
+        with self._translate_lock:
+            if not text_tr or len(text_tr.strip()) == 0:
+                return {"translation": "", "latency_ms": 0, "engine": "None"}
+    
+            cultural_result, match_type = self._check_cultural(text_tr, src_lang, tgt_lang)
+    
+            if match_type == "exact_fast":
+                return {"translation": cultural_result, "latency_ms": 0, "engine": "CulturalMap"}
+    
+            hint = ""
+            if match_type == "exact_intent":
+                idiom, intent = cultural_result
+                hint = (
+                    f"CULTURAL CONTEXT: The phrase '{idiom}' conveys the meaning of "
+                    f"'{intent}'. Translate this naturally into {tgt_name}, matching the active style.\n\n"
+                )
+            elif match_type == "partial":
+                idiom, intent = cultural_result
+                hint = (
+                    f"CULTURAL CONTEXT: The text contains '{idiom}' which conveys '{intent}'. "
+                    f"Translate this expression naturally into {tgt_name} as part of the full sentence.\n\n"
+                )
+    
+            # Sistem promptunu guncelle
+            self.system_prompt = self._build_system_prompt(src_name, tgt_name)
+    
+            if self.mode == "online":
+                return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+            return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
 
     # ═══════════════════════════════════════════════════════════
     # YÜRÜYEN ÖZET OLUŞTURMA (Aşama 2)
@@ -434,7 +393,32 @@ class Translator:
     # (Gemini API [Gemma 4] → Gemini API [Flash] )
     # ═══════════════════════════════════════════════════════════
 
-    def _gemini_call(self, model_name: str, user_message: str, timeout: float = 8.0):
+    def _maybe_trigger_quota_cooldown(self, exc: Exception, model_name: str):
+        """429 RESOURCE_EXHAUSTED algılandığında online katmanı geçici devre dışı bırakır.
+
+        - İlk 429: 60s cooldown
+        - Ardışık her 429: cooldown 2x (60s → 120s → 240s → ... cap 1800s/30dk)
+        - Bu sayede free-tier kotası bittiğinde her chunk için 20-30s timeout ziyan etmiyoruz;
+          tüm akış direkt offline'a iner.
+
+        Detection: exception string'inde "429" veya "RESOURCE_EXHAUSTED" arar
+        (Google google.genai.errors.ClientError'ın hem code'u hem mesajı eşleşir).
+        """
+        msg = str(exc)
+        if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
+            return  # quota dışı bir hata — cooldown başlatma
+
+        self._consecutive_quota_errors += 1
+        # 60s × 2^(n-1), cap 1800s (30dk)
+        cooldown_sec = min(1800, 60 * (2 ** (self._consecutive_quota_errors - 1)))
+        self._online_cooldown_until = time.time() + cooldown_sec
+        log.warning(
+            f"⚠ Kota tükendi ({model_name}, 429). "
+            f"Online katman {cooldown_sec}s ({cooldown_sec // 60}dk) süreyle devre dışı, "
+            f"offline mod kullanılacak. (ardışık quota hatası: {self._consecutive_quota_errors})"
+        )
+
+    def _gemini_call(self, model_name: str, user_message: str, timeout: float = 20.0, max_output_tokens: int = 300):
         """Gemini API cagrisini daemon thread ile calistirir.
 
         - generate_content (non-streaming) kullanir — model uyumlulugu garantili.
@@ -445,18 +429,68 @@ class Translator:
         result = [None]
         error = [None]
 
+        # Gemini 2.5 ailesi "thinking" model — output budget'i internal reasoning'e
+        # harcayip ceviriye cok az token birakir. Ceviri gorevinde thinking gereksiz.
+        cfg_kwargs = dict(
+            system_instruction=self.system_prompt,
+            temperature=0.2,
+            max_output_tokens=max_output_tokens,
+        )
+        if "2.5" in model_name:
+            try:
+                cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass  # SDK eski surumde ThinkingConfig yoksa sessizce gec
+
+        def _is_transient_5xx(exc) -> bool:
+            """500/503 gibi gecici sunucu hatalari icin hizli retry yapilir.
+            429 (kota), 4xx (kotu istek) retry edilmez — onlar kalici."""
+            try:
+                code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                if isinstance(code, int) and 500 <= code < 600:
+                    return True
+                msg = str(exc)
+                return ("500 INTERNAL" in msg) or ("503 " in msg) or ("UNAVAILABLE" in msg)
+            except Exception:
+                return False
+
+        def _do_request():
+            return self.gemini_client.models.generate_content(
+                model=model_name,
+                config=types.GenerateContentConfig(**cfg_kwargs),
+                contents=user_message
+            )
+
         def _call():
             try:
-                resp = self.gemini_client.models.generate_content(
-                    model=model_name,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        temperature=0.2,
-                        max_output_tokens=300
-                    ),
-                    contents=user_message
-                )
+                try:
+                    resp = _do_request()
+                except Exception as e1:
+                    # 5xx -> 1 hizli retry (Google API flaky oluyor; fallback'e zipladiginda
+                    # baglam ve max_tokens reset oluyor, kalitesizlige sebep). Loglarda
+                    # 500 INTERNAL onlarca kez goruldu, retry ile cogu cozulur.
+                    if _is_transient_5xx(e1):
+                        log.info(f"[GEMINI] {model_name} 5xx -> 0.8s sonra 1 retry...")
+                        time.sleep(0.8)
+                        resp = _do_request()
+                    else:
+                        raise
                 result[0] = resp.text or ""
+                # ── TANI: kesme sebebini ortaya koy ──
+                try:
+                    cand = resp.candidates[0] if resp.candidates else None
+                    fr = getattr(cand, "finish_reason", None) if cand else None
+                    um = getattr(resp, "usage_metadata", None)
+                    in_tok = getattr(um, "prompt_token_count", "?") if um else "?"
+                    out_tok = getattr(um, "candidates_token_count", "?") if um else "?"
+                    out_chars = len(result[0])
+                    log.info(
+                        f"[GEMINI] {model_name} | finish_reason={fr} | "
+                        f"max_out={max_output_tokens} | in_tok={in_tok} out_tok={out_tok} | "
+                        f"chars={out_chars}"
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 error[0] = e
 
@@ -478,14 +512,55 @@ class Translator:
         Bulut API'leri üzerinden çeviri yapar.
         2 katmanlı fallback: Gemini API (Gemma 4) başarısız → Gemini 2.5 Flash
         İkisi de başarısız olursa hata döner.
+
+        Kota cooldown: Free-tier 429 alındığında bir süre direkt offline'a düşülür
+        (her chunk için boşa timeout beklemek yerine).
         """
         # Context varsa kullanıcı mesajını zenginleştir
         user_message = self._build_user_message(text_tr, context, hint, prev_translation, rolling_summary)
 
+        # ── KOTA COOLDOWN GUARD ──────────────────────────────────────────
+        # Aktifse online katmanları atla, direkt offline'a in.
+        now = time.time()
+        if now < self._online_cooldown_until:
+            remaining = int(self._online_cooldown_until - now)
+            log.info(
+                f"Online kota cooldown aktif ({remaining}s kaldı) — "
+                f"bulut atlanıyor, direkt offline'a iniliyor."
+            )
+            try:
+                return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+            except Exception:
+                log.critical("Offline da başarısız (cooldown sırasında).", exc_info=True)
+                return {"translation": "[ÇEVİRİ HATASI]", "latency_ms": 0, "engine": "Failed"}
+
+        # ── DİNAMİK TİMEOUT HESABI ───────────────────────────────────────
+        # Canlı ses (telsiz) için hızlı fallback (20s) istiyoruz.
+        # Kitap çevirisinde (çok uzun metin veya geçmiş bağlam) API'ye 60s zaman tanıyoruz.
+        input_words = len(text_tr.split())
+        is_heavy_workload = bool(prev_translation or rolling_summary or input_words > 50)
+        dynamic_timeout = 60.0 if is_heavy_workload else 20.0
+
+        # Gemma 4 birincil motor — kota askida iken bile 90-150s sonunda cevap dondurebiliyor.
+        # Cok agresif timeout (60s) onu pratik olarak pasiflestiriyor. 2x pay birakiyoruz.
+        # Flash ise hizli fallback olarak normal sureyle kullanilir.
+        gemma4_timeout = dynamic_timeout * 2  # 40s (live) / 120s (heavy)
+        flash_timeout  = dynamic_timeout       # 20s (live) / 60s (heavy)
+
+        # Girdi kelime sayisina gore dinamik cikti token limiti (kesme onleme).
+        # TR→EN cevirisinde cikti ~%20-30 sisiyor; ayrica Gemma 4 bazen reasoning
+        # token'i harciyor — bunlar da output butcesinden dusuluyor. Bu yuzden:
+        #   - Floor 600 (eskiden 300; loglarda hep 300 hit ediyordu, MAX_TOKENS)
+        #   - Carpan 4 (eskiden 3; reasoning + dil sismesi icin emniyet payi)
+        # Canli: 10 kelime → 600, Dublaj/Medya: 25 kelime → 600, 100 kelime → 600,
+        # 200 kelime → 800, 1024 kelime → 4096 cap.
+        dynamic_max_tokens = min(4096, max(600, input_words * 4))
+
         # --- KATMAN 1: GEMINI API (GEMMA 4) ---
         gemini_gemma_start = time.time()
         try:
-            translation = self._gemini_call(self.gemma4_api_model, user_message)
+            translation = self._gemini_call(self.gemma4_api_model, user_message, timeout=gemma4_timeout, max_output_tokens=dynamic_max_tokens)
+            self._consecutive_quota_errors = 0
             latency = int((time.time() - gemini_gemma_start) * 1000)
             return {
                 "translation": translation.strip(),
@@ -493,8 +568,9 @@ class Translator:
                 "engine": f"Gemini API ({self.gemma4_api_model})"
             }
         except TimeoutError:
-            log.warning(f"Gemini API ({self.gemma4_api_model}) Zaman Aşımı (8s) -> Gemini 2.5 Flash'a geçiliyor...")
-        except Exception:
+            log.warning(f"Gemini API ({self.gemma4_api_model}) Zaman Aşımı ({gemma4_timeout}s) -> Gemini 2.5 Flash'a geçiliyor...")
+        except Exception as e:
+            self._maybe_trigger_quota_cooldown(e, self.gemma4_api_model)
             log.warning(
                 f"Gemini API ({self.gemma4_api_model}) hatası -> Gemini 2.5 Flash'a geçiliyor.",
                 exc_info=True
@@ -503,16 +579,18 @@ class Translator:
         # --- KATMAN 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
         try:
-            translation = self._gemini_call(self.gemini_fallback_model, user_message)
+            translation = self._gemini_call(self.gemini_fallback_model, user_message, timeout=flash_timeout, max_output_tokens=dynamic_max_tokens)
             latency = int((time.time() - gemini_flash_start) * 1000)
+            self._consecutive_quota_errors = 0
             return {
                 "translation": translation.strip(),
                 "latency_ms": latency,
                 "engine": f"Gemini API ({self.gemini_fallback_model})"
             }
         except TimeoutError:
-            log.warning("Gemini 2.5 Flash Zaman Aşımı (8s). Yerel modele düşülüyor...")
-        except Exception:
+            log.warning(f"Gemini 2.5 Flash Zaman Aşımı ({flash_timeout}s). Yerel modele düşülüyor...")
+        except Exception as e:
+            self._maybe_trigger_quota_cooldown(e, self.gemini_fallback_model)
             log.warning("Gemini 2.5 Flash hatası. Yerel modele düşülüyor.", exc_info=True)
 
         # --- KATMAN 3: YEREL OFFLINE MODEL FALLBACK (Kesintisiz Hizmet) ---
@@ -540,8 +618,12 @@ class Translator:
         Yerel GGUF modeli üzerinden çeviri yapar.
         İnternet gerektirmez. Model lazy load ile VRAM'e alınır.
         """
-        # Bağlam parametresi belirleme: Uzun dokümanlarda (Aşama 2 özellikleri varsa) 2048, standart telsizde 512!
-        req_ctx = 2048 if (prev_translation or rolling_summary) else 512
+        # Bağlam parametresi belirleme:
+        # - Standart canlı çeviri: 512 (hızlı, minimum bellek)
+        # - Doküman çevirisi (rolling_summary/prev_translation var): 8192
+        #   Gemma 4 zaten 131k destekliyor; 800-kelimelik chunk + system_prompt + glossary
+        #   2048'i kolay aşıyor (gerçek ölçüm: ~2700 token).
+        req_ctx = 8192 if (prev_translation or rolling_summary) else 512
 
         if self.local_llm is None:
             if self._llm_vram_failed:
@@ -549,7 +631,14 @@ class Translator:
             if not self.load_local_model(req_ctx):
                 return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
         else:
-            if getattr(self, "loaded_n_ctx", 512) != req_ctx:
+            # BUG FIX: Modeli sadece BUYUT, asla kucultme.
+            # Aksi halde dubber 8192 ile yukledikten sonra ilk segmentte
+            # (prev_translation="") req_ctx=512 hesaplaniyor ve model 512'ye
+            # dusuruluyordu -> bu da kisa Whisper segmentlerinde "context doldu"
+            # warning'i tetikleyip translate_online <-> translate_offline
+            # sonsuz dongusunu acmis oluyordu.
+            loaded = getattr(self, "loaded_n_ctx", 512)
+            if loaded < req_ctx:
                 self.load_local_model(req_ctx)
 
         user_message = self._build_user_message(text_tr, context, hint, prev_translation, rolling_summary)
@@ -569,7 +658,28 @@ class Translator:
             prompt_tokens = int(word_est * 1.5) + CHAT_TEMPLATE_OVERHEAD
 
         context_size = getattr(self, "loaded_n_ctx", req_ctx)
-        remaining_space = max(30, context_size - prompt_tokens - safe_margin)
+        # BUG FIX: max() ile clamp etme — negatif kalan boşluk guard'ı atlatıyordu.
+        # Önce gerçek (signed) boşluğu hesapla, overflow'u yakala.
+        raw_remaining = context_size - prompt_tokens - safe_margin
+
+        # OVERFLOW: prompt zaten context'i aşıyor (rolling_summary + prev_translation şişmiş olabilir).
+        # Online'a recursion yapmak yerine ağır bağlamı düşürüp tekrar dene.
+        if raw_remaining < 30 and (prev_translation or rolling_summary):
+            log.warning(
+                f"Offline prompt overflow ({prompt_tokens}/{context_size} token). "
+                f"prev_translation + rolling_summary düşürülüyor, sade çeviri deneniyor."
+            )
+            user_message = self._build_user_message(text_tr, context, hint, "", "")
+            try:
+                sys_tokens  = len(self.local_llm.tokenize(self.system_prompt.encode('utf-8')))
+                user_tokens = len(self.local_llm.tokenize(user_message.encode('utf-8')))
+                prompt_tokens = sys_tokens + user_tokens + CHAT_TEMPLATE_OVERHEAD
+            except Exception:
+                word_est = len((self.system_prompt + user_message).split())
+                prompt_tokens = int(word_est * 1.5) + CHAT_TEMPLATE_OVERHEAD
+            raw_remaining = context_size - prompt_tokens - safe_margin
+
+        remaining_space = max(30, raw_remaining)
 
         # Kelime sayısına göre istenen token miktarı — adaptif alt sınır
         input_words = len(text_tr.split())
@@ -578,20 +688,32 @@ class Translator:
             max(60, remaining_space)  # asla remaining_space'i aşamaz
         )
 
-        # Çıkışı kalan güvenli boşluğa kelepçeliyoruz
-        dynamic_max_tokens = min(desired_tokens, remaining_space)
+        # Cikisi kalan guvenli bosluga kelepceliyoruz; cok kisa input'larda
+        # (Whisper segmentleri 5-9 kelime) en az 32 token cikti payi birak.
+        # Aksi halde dynamic_max_tokens < 20 sahte "context doldu" tetikliyordu.
+        dynamic_max_tokens = max(
+            min(32, remaining_space),  # alt sinir
+            min(desired_tokens, remaining_space)
+        )
 
-        # Güvenlik net'i: context doluysa online'a düş, sessizce batma
-        if dynamic_max_tokens < 20:
-            # TOKEN TAŞMAŞI ─────────────────────────────────────────────────────────────
-            # Bu durum llama.cpp'nin sessizce "Requested tokens exceed context window"
-            # hatası atmasına veya boş çıktı üretmesine yol açar.
-            # WARNING seviyesinde logla — kaybolmaz, izlenebilir.
+        # Guvenlik net'i: GERCEK overflow durumu — prompt zaten context'i asti.
+        if raw_remaining < 30:
+            # TOKEN TASMASI ─────────────────────────────────────────────────────────────
             log.warning(
-                f"Offline context doldu — token taşması riski! "
-                f"prompt={prompt_tokens} token, n_ctx={context_size}, "
-                f"kalan={remaining_space}. Online fallback devreye giriyor."
+                f"Offline context overflow! prompt={prompt_tokens} token, "
+                f"n_ctx={context_size}, kalan={remaining_space}. Online'a dusuluyor."
             )
+            # SONSUZ DONGU GUARD: online cooldown'da ise translate_online
+            # tekrar translate_offline'a dusecek -> sonsuz dongu. Direkt hata don.
+            if time.time() < self._online_cooldown_until:
+                log.error(
+                    "Hem offline overflow hem online cooldown — ceviri atlandi."
+                )
+                return {
+                    "translation": text_tr,  # ham metni gec, dublaj akisini kirma
+                    "latency_ms": 0,
+                    "engine": "Bypass (overflow+cooldown)"
+                }
             return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
 
         try:

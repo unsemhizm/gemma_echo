@@ -72,6 +72,13 @@ class MainWindow(ctk.CTk):
         self.switch_view("live")
 
     def switch_view(self, name: str):
+        # Ayrılınan sayfanın iptal işlemlerini (hook) tetikle
+        current_view_name = getattr(self._sidebar, "_active", None)
+        if current_view_name and current_view_name in self._views:
+            curr_view = self._views[current_view_name]
+            if hasattr(curr_view, "on_leave"):
+                curr_view.on_leave()
+
         for v in self._views.values():
             v.pack_forget()
         view = self._views[name]

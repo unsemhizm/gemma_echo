@@ -3,19 +3,19 @@ Gemma Echo — Kitap ve Belge Çeviri Ekranı (Book / Document View)
 """
 
 import os
+import sys
 import threading
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from gui.config import ConfigManager
 from gui.i18n import t, get_language
-from gui.pages._helpers import _C, _header, _card
+from gui.pages._helpers import _C, _header, _card, _show_toast
 
 # Desteklenen dil secenekleri
 _LANGS = [
     ("Turkish",  "tr"),
     ("English",  "en"),
     ("German",   "de"),
-    ("Spanish",  "es"),
     ("French",   "fr"),
     ("Italian",  "it"),
     ("Spanish",  "es"),
@@ -32,6 +32,8 @@ class BookView(ctk.CTkFrame):
         self.app = app
         self._translating = False
         self._dt = None          # aktif DocumentTranslator ornegi
+        self._was_cancelled = False  # _cancel çağrıldı mı (finally toast logic'inde)
+        self._last_error = None  # exception olduysa son hata mesajı (toast için)
         self._build()
 
     def _build(self):
@@ -146,8 +148,8 @@ class BookView(ctk.CTkFrame):
         self._btn_cancel.pack(side="left", padx=(0, 8))
 
         self._btn_save = ctk.CTkButton(
-            act_row, text=f"\U0001f4be {t('save_translation')}",
-            height=36, width=100, corner_radius=10,
+            act_row, text=t("book_save_full"),
+            height=36, width=140, corner_radius=10,
             fg_color=_C["surface2"], hover_color=_C["border"],
             font=ctk.CTkFont(size=11),
             state="disabled",
@@ -186,7 +188,7 @@ class BookView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             out_card,
-            text="Ceviri tamamlaninca metin burada gorunur.",
+            text=t("book_result_hint"),
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).pack(anchor="w", pady=(4, 0))
 
@@ -196,11 +198,11 @@ class BookView(ctk.CTkFrame):
         path = filedialog.askopenfilename(
             title=t("browse"),
             filetypes=[
-                ("Desteklenen belgeler", "*.txt *.pdf *.docx"),
-                ("Metin",   "*.txt"),
-                ("PDF",     "*.pdf"),
-                ("Word",    "*.docx"),
-                ("Hepsi",   "*.*"),
+                (t("supported_documents_label"), "*.txt *.pdf *.docx"),
+                (t("text_filetype_label"),   "*.txt"),
+                (t("pdf_filetype_label"),     "*.pdf"),
+                (t("word_filetype_label"),    "*.docx"),
+                (t("all_files_label"),   "*.*"),
             ]
         )
         if path:
@@ -214,7 +216,13 @@ class BookView(ctk.CTkFrame):
         self._out_box.configure(state="normal")
         self._out_box.delete("0.0", "end")
         self._out_box.configure(state="disabled")
-        self._btn_save.configure(state="disabled")
+        self._out_box.configure(border_color=_C["border"])
+        self._btn_save.configure(
+            state="disabled",
+            text=t("book_save_full"),
+            fg_color=_C["surface2"],
+            text_color=_C["text"],
+        )
 
     # ── Baslat / Iptal ────────────────────────────────────────────────────────
 
@@ -237,15 +245,22 @@ class BookView(ctk.CTkFrame):
             messagebox.showwarning(t("backend_not_ready_models"),
                                    t("models_still_loading"))
             return
+        # D10: orchestrator/translator hazır değilse net hata ver — AttributeError'a karşı koru.
+        orch = getattr(self.app, "_orchestrator", None)
+        if orch is None or getattr(orch, "translator", None) is None:
+            messagebox.showwarning(t("backend_not_ready_models"),
+                                   t("models_still_loading"))
+            return
 
         src_lang = self._src_lang_combo.get()
         tgt_lang = self._tgt_lang_combo.get()
         chunk_words = int(self._chunk_combo.get().split()[0])
 
         self._translating = True
+        self._was_cancelled = False
+        self._last_error = None
         self._btn_start.configure(state="disabled")
         self._btn_cancel.configure(state="normal")
-        self._btn_save.configure(state="disabled")
         self._reset_output()
 
         threading.Thread(
@@ -255,12 +270,26 @@ class BookView(ctk.CTkFrame):
         ).start()
 
     def _cancel(self):
-        if self._dt is not None:
-            self._dt.cancel()
-        self._translating = False
-        self._set_progress(0, "Iptal edildi.", _C["yellow"])
-        self._btn_start.configure(state="normal")
+        # B9: race fix — pipeline finally `self._dt = None` yapabilir; lokal
+        # değişkene at, ardarık kontrol+çağrı arasında AttributeError olmasın.
+        dt = self._dt
+        if dt is not None:
+            dt.cancel()
+        self._was_cancelled = True
+        # B1: _translating burada False yapılmıyor — pipeline finally'sinde False olacak.
+        # Aksi halde tıklamadan hemen sonra gelen 'if self._translating: append_output'
+        # branşı atlanır ve kısmi sonuç ekrana basılmaz.
+        # UX-fix: progress bar'ı 0'a düşürme — kullanıcı nereye geldiğini görmek ister.
+        # Sadece label'ı sarıya çevir; bar'ı olduğu yerde bırak.
+        self.after(0, lambda: self._prog_lbl.configure(
+            text=t("cancelled_message"), text_color=_C["yellow"]
+        ))
         self._btn_cancel.configure(state="disabled")
+
+    def on_leave(self):
+        """Kullanıcı farklı bir sayfaya geçtiğinde çalışan işlemi durdur."""
+        if self._translating:
+            self._cancel()
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -279,22 +308,51 @@ class BookView(ctk.CTkFrame):
         def on_progress(frac, msg):
             self._set_progress(frac, msg)
 
+        # B4: Pipeline'a lokalize progress mesajları geç. Anahtar yoksa _DEFAULT_MESSAGES
+        # (TR) kullanılır; geri uyumlu.
+        messages = self._build_progress_messages()
+
+        result = ""
+        had_error = False
         try:
             result = self._dt.translate_file(
                 file_path=file_path,
                 src_lang=src_lang,
                 tgt_lang=tgt_lang,
                 output_path=None,          # GUI kaydetme dugmesini kullanir
-                progress_cb=on_progress
+                progress_cb=on_progress,
+                messages=messages,
             )
-
-            if self._translating:          # iptal edilmediyse
-                self._append_output(result)
-                self.after(0, lambda: self._btn_save.configure(state="normal"))
-
         except Exception as e:
-            self._set_progress(0, f"Hata: {e}", _C["red"])
+            had_error = True
+            self._last_error = e
+            # B3: Exception olsa bile o ana kadarki kısmi sonucu kaybetme.
+            try:
+                result = self._dt.partial_result() if self._dt else ""
+            except Exception:
+                result = ""
         finally:
+            final_text = result or ""
+
+            # Ön koşulları finally'de yakala (sonra _dt = None)
+            done = len(self._dt.translated_parts) if self._dt else 0
+            total = self._dt.total_chunks if self._dt else 0
+            was_cancelled = self._was_cancelled
+
+            # Çıktı textbox'ını güncelle (B1: her durumda)
+            if final_text:
+                self._append_output(final_text)
+
+            # Save buton durumu + label
+            self.after(0, lambda: self._post_run_button_state(
+                bool(final_text), had_error or was_cancelled
+            ))
+
+            # Toast bildirim aktır (UX cilası)
+            self.after(0, lambda: self._post_run_toast(
+                final_text, had_error, was_cancelled, done, total
+            ))
+
             self._translating = False
             self._dt = None
             self.after(0, lambda: [
@@ -302,30 +360,201 @@ class BookView(ctk.CTkFrame):
                 self._btn_cancel.configure(state="disabled"),
             ])
 
+    # ── Lokalize progress mesajları ─────────────────────────────────────────
+
+    def _build_progress_messages(self) -> dict:
+        """DocumentTranslator'a gönderilecek lokalize mesaj template'leri.
+
+        i18n.py'de uygun key'ler varsa onları kullan; yoksa pipeline'da tanımlı
+        Turkçe default'lara düşer (geri uyumlu).
+        """
+        # t() bilinmeyen key'de genelde key'i geri döner; farkı yakalayıp
+        # None döndürerek pipeline'ın default'larına bırakalım.
+        def _opt(key: str) -> str | None:
+            try:
+                val = t(key)
+            except Exception:
+                return None
+            if not val or val == key:
+                return None
+            return val
+
+        # Mevcut olabilecek anahtar eşlemeleri — yoksa None geçilir.
+        return {
+            "reading":        _opt("book_reading_file"),
+            "chunked":        _opt("book_chunked"),
+            "translating":    _opt("book_translating"),
+            "summary_update": _opt("book_summary_update"),
+            "done":           _opt("book_done"),
+            "cancelled":      _opt("book_cancelled"),
+            "empty_pdf":      _opt("book_empty_pdf"),
+            "empty_file":     _opt("book_empty_file"),
+            "unsupported":    _opt("book_unsupported"),
+        }
+
+    # ── Post-run yardımcıları (UX cilası) ──────────────────────────────────
+
+    def _post_run_button_state(self, has_result: bool, is_partial: bool):
+        """Çeviri sonrası 'Kaydet' butonunun etiket ve rengini ayarlar."""
+        if not has_result:
+            self._btn_save.configure(
+                state="disabled",
+                text=t("book_save_full"),
+                fg_color=_C["surface2"],
+                text_color=_C["text"],
+            )
+            return
+        if is_partial:
+            # Kısmi sonuç: dikkat çeken sarı/turuncu
+            self._btn_save.configure(
+                state="normal",
+                text=t("book_save_partial"),
+                fg_color=_C["yellow"],
+                text_color=_C["bg"],
+            )
+        else:
+            # Tam sonuç: standart mavi
+            self._btn_save.configure(
+                state="normal",
+                text=t("book_save_full"),
+                fg_color=_C["blue"],
+                text_color=_C["text"],
+            )
+
+    def _post_run_toast(self, final_text: str, had_error: bool,
+                        was_cancelled: bool, done: int, total: int):
+        """Çeviri sonrası duruma göre toast bildirim gösterir."""
+        if had_error:
+            err_str = str(self._last_error) if self._last_error else ""
+            low = err_str.lower()
+            # Taranmış PDF özel toast'ı (kırmızı + açıklayıcı)
+            if ("ocr" in low or "taranmış" in low or "scanned" in low
+                    or "metin içermiyor" in low or "contains no text" in low):
+                _show_toast(self, t("book_toast_pdf_scan"), level="error",
+                            duration_ms=7000)
+                return
+            if not final_text:
+                # Boş belge / okunamıyor
+                _show_toast(self, t("book_toast_empty"), level="warning")
+                return
+            # Genel hata — ama kısmi sonuç var
+            short = err_str if len(err_str) < 140 else err_str[:140] + "..."
+            _show_toast(self, t("book_toast_error", short), level="error",
+                        duration_ms=6000)
+            return
+
+        if was_cancelled:
+            if final_text and total:
+                _show_toast(self, t("book_toast_partial_ready", done, total),
+                            level="warning", duration_ms=6000)
+                # Status bar'a da kısa bilgi yansıt
+                self._prog_lbl.configure(
+                    text=t("book_partial_status", done, total),
+                    text_color=_C["yellow"],
+                )
+            return
+
+        # Tam başarı
+        if final_text:
+            sec = total if total else (final_text.count("\n\n") + 1)
+            _show_toast(self, t("book_toast_completed", sec), level="success")
+        else:
+            _show_toast(self, t("book_toast_empty"), level="warning")
+
     # ── Kaydet ────────────────────────────────────────────────────────────────
 
     def _save(self):
         text = self._out_box.get("0.0", "end").strip()
         if not text:
-            messagebox.showinfo("Bos", "Kaydedilecek metin yok.")
+            messagebox.showinfo(t("save_empty_title"), t("save_empty_message"))
             return
         src = self._file_entry.get().strip()
         base = os.path.splitext(os.path.basename(src))[0] if src else "ceviri"
         tgt = self._tgt_lang_combo.get().lower()[:2]
         path = filedialog.asksaveasfilename(
             title=t("save_translation"),
-            initialfile=f"{base}_{tgt}.txt",
+            initialfile=f"{base}_{tgt}.docx",
             initialdir=self.cfg.get("file_mode", "output_dir",
                                     default=os.path.expanduser("~")),
-            defaultextension=".txt",
-            filetypes=[("Metin", "*.txt"), ("Hepsi", "*.*")]
+            defaultextension=".docx",
+            filetypes=[
+                (t("word_filetype_label"), "*.docx"),
+                (t("text_filetype_label"), "*.txt"),
+                (t("all_files_label"),     "*.*"),
+            ],
         )
-        if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
-            self.cfg.set("file_mode", "output_dir", os.path.dirname(path))
-            self.cfg.save()
-            messagebox.showinfo("Kaydedildi", f"Dosya kaydedildi:\n{path}")
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".docx":
+                self._save_docx(path, text)
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                    f.flush()
+                    os.fsync(f.fileno())
+        except Exception as e:
+            messagebox.showerror(t("saved_title"), str(e))
+            return
+
+        # Windows Explorer'in klasor goruntusunu hemen yenile (cache sorunu).
+        # Bu olmadan masaustune yazilan dosya ikinci bir shell olayina kadar gorunmeyebilir.
+        self._notify_shell(path)
+
+        self.cfg.set("file_mode", "output_dir", os.path.dirname(path))
+        self.cfg.save()
+        messagebox.showinfo(t("saved_title"), t("file_saved_message", path))
+
+    def _notify_shell(self, path: str):
+        """Windows Explorer'a yeni dosyayi bildirir (SHChangeNotify).
+        Diger isletim sistemlerinde sessizce hicbir sey yapmaz."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            SHCNE_CREATE = 0x00000002
+            SHCNF_PATHW  = 0x0005
+            ctypes.windll.shell32.SHChangeNotify(
+                SHCNE_CREATE, SHCNF_PATHW, ctypes.c_wchar_p(path), None
+            )
+        except Exception:
+            pass  # bildirim basarisiz olursa kullaniciyi rahatsiz etme
+
+    def _save_docx(self, path: str, text: str):
+        """Çeviri metnini temiz bir Word belgesi olarak yazar.
+
+        Mizanpaj klonlamaz — kaynak PDF/DOCX layout'undan bağımsız, okunması rahat
+        bir e-kitap formatı üretir. python-docx zaten projede kurulu (PDF okuma için).
+        """
+        from docx import Document
+        from docx.shared import Pt, Cm
+
+        doc = Document()
+
+        # Kenar boşlukları — okunaklı kitap mizanpajı
+        for section in doc.sections:
+            section.top_margin    = Cm(2.2)
+            section.bottom_margin = Cm(2.2)
+            section.left_margin   = Cm(2.5)
+            section.right_margin  = Cm(2.5)
+
+        # Varsayılan stil — Calibri 11pt, satır arası rahat
+        style = doc.styles["Normal"]
+        style.font.name = "Calibri"
+        style.font.size = Pt(11)
+
+        # Boş satırlarla ayrılmış paragraflar — pipeline çıktı formatı
+        for para in text.split("\n\n"):
+            para = para.strip()
+            if not para:
+                continue
+            p = doc.add_paragraph(para)
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.35
+
+        doc.save(path)
 
     # ── Thread-safe yardimcilar ───────────────────────────────────────────────
 
@@ -341,4 +570,9 @@ class BookView(ctk.CTkFrame):
             self._out_box.delete("0.0", "end")
             self._out_box.insert("0.0", text)
             self._out_box.configure(state="disabled")
+            # "Afili döküm" — textbox border'ını 1.5sn vurgulu yap, sonra default'a dön.
+            highlight = _C["yellow"] if self._was_cancelled else _C["green"]
+            self._out_box.configure(border_color=highlight)
+            self._out_box.see("0.0")
+            self.after(1500, lambda: self._out_box.configure(border_color=_C["border"]))
         self.after(0, _u)

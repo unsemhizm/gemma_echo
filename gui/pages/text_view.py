@@ -272,3 +272,8 @@ class TextView(ctk.CTkFrame):
         if text:
             self.clipboard_clear()
             self.clipboard_append(text)
+
+    def on_leave(self):
+        """Kullanıcı farklı bir sayfaya geçtiğinde çalışan işlemi durdur."""
+        if self._mic_recording and self._mic_stop_event:
+            self._mic_stop_event.set()

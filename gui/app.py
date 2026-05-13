@@ -62,6 +62,8 @@ class GemmaEchoApp:
         self._orchestrator                     = None
         self._backend_thread                   = None
         self._ptt_hotkeys_registered          = False  # Space/Alt sadece canlı kayıt aktifken
+        self._outbound_hook                   = None   # keyboard.add_hotkey handle'i
+        self._inbound_hook                    = None   # keyboard.add_hotkey handle'i
 
         # Modül düzeyindeki logger — _init_logging() artık gerekli değil
         self.logger = get_logger("gemma_echo.app")
@@ -173,6 +175,7 @@ class GemmaEchoApp:
         # MainWindow ana event loop'u tasir (CTk)
         self._main    = MainWindow(self.cfg, app=self)
         self._overlay = Overlay(self.cfg, result_queue=self._rq)
+        self._overlay.on_telemetry_update = self._on_telemetry_update
 
         # Backend arka planda yukle
         self._backend_thread = threading.Thread(
@@ -185,6 +188,15 @@ class GemmaEchoApp:
 
         # Ana pencere mainloop'u baslatir
         self._main.mainloop()
+
+    def _on_telemetry_update(self, data: dict):
+        if self._main:
+            live = getattr(self._main, "_views", {}).get("live")
+            if live and hasattr(live, "update_telemetry"):
+                try:
+                    self._main.after(0, lambda: live.update_telemetry(data))
+                except Exception:
+                    pass
 
     # ── Backend Yukleme ───────────────────────────────────────────────────────
 
@@ -272,7 +284,10 @@ class GemmaEchoApp:
 
     def stop_live(self):
         if self._recorder:
-            self._recorder._stop_event.set()
+            if hasattr(self._recorder, 'stop'):
+                self._recorder.stop()
+            else:
+                self._recorder._stop_event.set()
             self._recorder = None
         if self._overlay:
             self._overlay.set_status(t("ready_stopped"), _C["dim"])
@@ -307,7 +322,10 @@ class GemmaEchoApp:
 
     def stop_inbound(self):
         if self._inbound_recorder:
-            self._inbound_recorder._stop_event.set()
+            if hasattr(self._inbound_recorder, 'stop'):
+                self._inbound_recorder.stop()
+            else:
+                self._inbound_recorder._stop_event.set()
             self._inbound_recorder = None
 
     # ── Dual PTT Anahtarlama ───────────────────────────────────────────────────
@@ -376,19 +394,36 @@ class GemmaEchoApp:
             return
         self._unregister_hotkeys()
 
+    def _clear_hotkey_handles(self):
+        """Yalniz kendi kaydettigimiz handle'lari kaldir; baska modulleri etkileme.
+        Hem _unregister_hotkeys hem _reregister_hotkeys tarafindan kullanilir."""
+        try:
+            import keyboard
+        except ImportError:
+            self._outbound_hook = None
+            self._inbound_hook = None
+            self._ptt_hotkeys_registered = False
+            return
+
+        for attr in ("_outbound_hook", "_inbound_hook"):
+            handle = getattr(self, attr, None)
+            if handle is None:
+                continue
+            try:
+                keyboard.remove_hotkey(handle)
+            except (KeyError, ValueError):
+                # Zaten kaldirilmis ya da gecersiz — gormezden gel.
+                pass
+            except Exception as e:
+                print(f"[UYARI] {attr} kaldirilamadi: {e}")
+            setattr(self, attr, None)
+        self._ptt_hotkeys_registered = False
+
     def _unregister_hotkeys(self):
         if not self._ptt_hotkeys_registered:
             return
-        try:
-            import keyboard
-
-            keyboard.unhook_all_hotkeys()
-            print("[PTT] Global hotkey'ler kaldirildi (canli oturum kapali).")
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"[UYARI] Hotkey kaldirilamadi: {e}")
-        self._ptt_hotkeys_registered = False
+        self._clear_hotkey_handles()
+        print("[PTT] Global hotkey'ler kaldirildi (canli oturum kapali).")
 
     def _register_hotkeys(self):
         """
@@ -405,8 +440,8 @@ class GemmaEchoApp:
             key_out = self.cfg.get("inbound", "hotkey_outbound", default="space")
             key_in  = self.cfg.get("inbound", "hotkey_inbound",  default="alt")
 
-            keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
-            keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
+            self._outbound_hook = keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
+            self._inbound_hook  = keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
             self._ptt_hotkeys_registered = True
 
             print(f"[PTT] Hotkey kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf")
@@ -416,22 +451,39 @@ class GemmaEchoApp:
             print(f"[UYARI] Hotkey kaydedilemedi: {e}")
 
     def _reregister_hotkeys(self, key_out: str, key_in: str):
-        """Ayarlar'dan tus degisince: oturum aciksa yeni tuslarla yeniden kaydet."""
+        """Ayarlar'dan tus degisince: yalniz kendi handle'larimizi kaldir, yeniden kaydet."""
         try:
             import keyboard
-            keyboard.unhook_all_hotkeys()
-            self._ptt_hotkeys_registered = False
-            if self._live_hotkey_session_active():
-                keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
-                keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
-                self._ptt_hotkeys_registered = True
-                print(
-                    f"[PTT] Hotkey yeniden kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf"
+        except ImportError:
+            print("[UYARI] 'keyboard' kutuphanesi bulunamadi.")
+            return
+
+        self._clear_hotkey_handles()
+
+        if not self._live_hotkey_session_active():
+            # Oturum kapali; yeni tuslar config'e zaten yazildi,
+            # bir sonraki canli oturum acilisinda _register_hotkeys okuyup kullanir.
+            print(
+                f"[PTT] Yeni tuslar kaydedildi (oturum kapali): "
+                f"'{key_out}' = sen | '{key_in}' = karsi taraf"
+            )
+            if self._overlay:
+                self._overlay.set_status(
+                    f"Tuslar kaydedildi: {key_out} / {key_in}", _C["blue"]
                 )
-                if self._overlay:
-                    self._overlay.set_status(
-                        f"Tuslar guncellendi: {key_out} / {key_in}", _C["blue"]
-                    )
+            return
+
+        try:
+            self._outbound_hook = keyboard.add_hotkey(key_out, lambda: self.switch_ptt("outbound"))
+            self._inbound_hook  = keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
+            self._ptt_hotkeys_registered = True
+            print(
+                f"[PTT] Hotkey yeniden kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf"
+            )
+            if self._overlay:
+                self._overlay.set_status(
+                    f"Tuslar guncellendi: {key_out} / {key_in}", _C["blue"]
+                )
         except Exception as e:
             print(f"[UYARI] Hotkey yeniden kaydedilemedi: {e}")
 

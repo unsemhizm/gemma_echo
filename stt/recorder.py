@@ -62,6 +62,12 @@ class Recorder:
             para_ms = config.get("recording", "paragraph_silence_ms", default=2000)
         self._para_threshold = para_ms // self.FRAME_DURATION_MS
 
+        self.vad_enabled = True
+        self.hotkey_outbound = "space"
+        if config:
+            self.vad_enabled = config.get("recording", "vad_enabled", default=True)
+            self.hotkey_outbound = config.get("inbound", "hotkey_outbound", default="space")
+
         # On-tetik tamponu: 300ms (10 kare) — yalanci tetiklemeleri onler
         self._pre_trigger_size = 10
 
@@ -123,7 +129,14 @@ class Recorder:
                         print("[UYARI] Ses tamponu tasti.")
 
                     frame_bytes = bytes(raw)
-                    is_speech = self.vad.is_speech(frame_bytes, self.SAMPLE_RATE)
+                    if self.vad_enabled:
+                        is_speech = self.vad.is_speech(frame_bytes, self.SAMPLE_RATE)
+                    else:
+                        try:
+                            import keyboard
+                            is_speech = keyboard.is_pressed(self.hotkey_outbound)
+                        except:
+                            is_speech = False
 
                     if not triggered:
                         # ── ON-TAMPON: tetiklenme bekleniyor ──────────
@@ -204,6 +217,21 @@ class Recorder:
 
         except KeyboardInterrupt:
             print("\n[RECORDER] Dinleme durduruldu.")
+
+    def stop(self):
+        """Kaydı durdurur ve bekleyen işleri temizler."""
+        self._stop_event.set()
+        while not self.audio_queue.empty():
+            try:
+                wav_path = self.audio_queue.get_nowait()
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+                self.audio_queue.task_done()
+            except:
+                pass
+
 
     # ═══════════════════════════════════════════════════════════
     # CONSUMER: ASENKRON ISLEM THREAD'I
@@ -330,6 +358,12 @@ class LoopbackRecorder:
         self._pre_trigger_size  = 10
         self._frame_size        = int(self.SAMPLE_RATE * self.FRAME_DURATION_MS / 1000)
 
+        self.vad_enabled = True
+        self.hotkey_inbound = "alt"
+        if config:
+            self.vad_enabled = config.get("recording", "vad_enabled", default=True)
+            self.hotkey_inbound = config.get("inbound", "hotkey_inbound", default="alt")
+
         self.vad              = webrtcvad.Vad(self.aggressiveness)
         self._stop_event      = threading.Event()
         self.audio_queue      = queue.Queue(maxsize=10)
@@ -380,7 +414,14 @@ class LoopbackRecorder:
                     samples_i  = np.clip(samples_f * 32767, -32768, 32767).astype(np.int16)
                     frame_bytes = samples_i.tobytes()
 
-                    is_speech = self.vad.is_speech(frame_bytes, self.SAMPLE_RATE)
+                    if self.vad_enabled:
+                        is_speech = self.vad.is_speech(frame_bytes, self.SAMPLE_RATE)
+                    else:
+                        try:
+                            import keyboard
+                            is_speech = keyboard.is_pressed(self.hotkey_inbound)
+                        except:
+                            is_speech = False
 
                     if not triggered:
                         pre_trigger_buf.append((frame_bytes, is_speech))
@@ -418,6 +459,20 @@ class LoopbackRecorder:
             print("\n[LOOPBACK] Durduruldu.")
         except Exception as e:
             print(f"[LOOPBACK] Hata: {e}")
+
+    def stop(self):
+        """Kaydı durdurur ve bekleyen işleri temizler."""
+        self._stop_event.set()
+        while not self.audio_queue.empty():
+            try:
+                wav_path = self.audio_queue.get_nowait()
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
+                self.audio_queue.task_done()
+            except:
+                pass
 
     # ── Consumer ─────────────────────────────────────────────────────────────
 

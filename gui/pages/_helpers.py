@@ -141,3 +141,120 @@ class _InfoIcon(ctk.CTkButton):
             self._tip_win = None
         if _InfoIcon._active is self:
             _InfoIcon._active = None
+
+
+# ── Toast Bildirim Widget'ı ───────────────────────────────────────────────────
+class _Toast(ctk.CTkToplevel):
+    """Sağ üst köşede otomatik kapanan bildirim kutusu.
+
+    - Stack: birden fazla toast üst üste yığılır.
+    - Auto-close: duration_ms sonra kapanır (default 4.5sn).
+    - Click-to-dismiss: toast'a veya X'e tıklayınca kapanır.
+    - level: 'info' | 'success' | 'warning' | 'error' — renk şeması seçer.
+    """
+
+    _stack: list = []
+    _GAP = 8
+    _TOP_OFFSET = 64
+    _WIDTH = 360
+
+    _LEVELS = {
+        "info":    ("#12264a", "#5b9ef9", "ⓘ"),
+        "success": ("#0a2318", "#23d05e", "✓"),
+        "warning": ("#3a2a08", "#f5a623", "⚠"),
+        "error":   ("#2a0d0d", "#f04747", "✕"),
+    }
+
+    def __init__(self, parent, message: str, level: str = "info",
+                 duration_ms: int = 4500):
+        super().__init__(parent)
+        self.wm_overrideredirect(True)
+        try:
+            self.wm_attributes("-topmost", True)
+        except Exception:
+            pass
+
+        bg, fg, icon = self._LEVELS.get(level, self._LEVELS["info"])
+        self.configure(fg_color=bg)
+
+        frm = ctk.CTkFrame(
+            self, fg_color=bg, corner_radius=12,
+            border_width=1, border_color=fg
+        )
+        frm.pack(fill="both", expand=True, padx=2, pady=2)
+
+        ctk.CTkLabel(
+            frm, text=icon,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=fg, width=28
+        ).pack(side="left", padx=(12, 6), pady=10)
+
+        ctk.CTkLabel(
+            frm, text=message,
+            font=ctk.CTkFont(size=11),
+            text_color=_C["text"], wraplength=self._WIDTH - 80,
+            justify="left", anchor="w"
+        ).pack(side="left", fill="x", expand=True, pady=10)
+
+        ctk.CTkButton(
+            frm, text="✕", width=22, height=22,
+            fg_color="transparent", hover_color=bg,
+            text_color=_C["muted"], font=ctk.CTkFont(size=11),
+            command=self._close, corner_radius=11
+        ).pack(side="right", padx=(4, 8), pady=10)
+
+        # Tıklamayla kapanma — toast üzerindeki tüm boş alanlar
+        for w in (self, frm):
+            w.bind("<Button-1>", lambda e: self._close())
+
+        _Toast._stack.append(self)
+        # Geometriyi after ile kur — widget'ın gerçek boyutu hesaplandıktan sonra
+        self.after(10, self._reposition_all)
+        self._auto_close_id = self.after(duration_ms, self._close)
+
+    @classmethod
+    def _reposition_all(cls):
+        if not cls._stack:
+            return
+        try:
+            top = cls._stack[0].master.winfo_toplevel()
+            top.update_idletasks()
+            rx = top.winfo_rootx()
+            rw = top.winfo_width()
+            ry = top.winfo_rooty()
+            x = rx + rw - cls._WIDTH - 18
+            y = ry + cls._TOP_OFFSET
+            for tst in cls._stack:
+                try:
+                    tst.update_idletasks()
+                    h = tst.winfo_reqheight() or 60
+                    tst.wm_geometry(f"{cls._WIDTH}x{h}+{x}+{y}")
+                    y += h + cls._GAP
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _close(self):
+        try:
+            self.after_cancel(self._auto_close_id)
+        except Exception:
+            pass
+        try:
+            _Toast._stack.remove(self)
+        except ValueError:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        _Toast._reposition_all()
+
+
+def _show_toast(parent, message: str, level: str = "info",
+                duration_ms: int = 4500) -> _Toast:
+    """Sağ üst köşede toast bildirim göster.
+
+    level: 'info' | 'success' | 'warning' | 'error'
+    """
+    return _Toast(parent, message=message, level=level, duration_ms=duration_ms)

@@ -120,7 +120,7 @@ class Orchestrator:
 
         old_mode = self.current_mode
 
-        if old_mode == mode:
+        if old_mode == mode and mode != "custom":
             log.debug(f"Zaten '{mode}' modunda, geçiş atlanıyor.")
             return
 
@@ -371,14 +371,15 @@ class Orchestrator:
 
             if self.result_queue is not None:
                 self.result_queue.put({
-                    "text_tr": text_tr,
-                    "text_en": text_en,
-                    "engine": llm_result.get("engine"),
+                    "direction":  "outbound",   # tutarlılık: inbound payload da bu alana sahip
+                    "text_tr":    text_tr,
+                    "text_en":    text_en,
+                    "engine":     llm_result.get("engine"),
                     "latency_ms": total_ms,
-                    "stt_ms": stt_ms,
-                    "llm_ms": llm_ms,
-                    "tts_ms": tts_ms,
-                    "error": None,
+                    "stt_ms":     stt_ms,
+                    "llm_ms":     llm_ms,
+                    "tts_ms":     tts_ms,
+                    "error":      None,
                 })
 
         except Exception:

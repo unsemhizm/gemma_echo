@@ -423,29 +423,39 @@ class Overlay(ctk.CTkToplevel):
 
     # ── Dis Arayuz ───────────────────────────────────────────────────────────
 
+    def _safe(self, fn):
+        """Widget agaci yikildiktan sonra gelen after() cagrilarini susturur."""
+        def _wrapped():
+            try:
+                if self.winfo_exists():
+                    fn()
+            except Exception:
+                pass
+        return _wrapped
+
     def set_status(self, msg: str, color: str = None):
         """Arka plan thread'lerinden durum mesaji gonderme (thread-safe)."""
-        self.after(0, lambda: self._status_label.configure(
+        self.after(0, self._safe(lambda: self._status_label.configure(
             text=msg, text_color=color or _C["dim"]
-        ))
+        )))
 
     def set_listening(self):
         """Kayit basladiginda."""
-        self.after(0, lambda: [
+        self.after(0, self._safe(lambda: [
             self._dot.configure(text_color=_C["green"]),
             self._status_label.configure(
                 text=t("recording"), text_color=_C["green"]
             ),
-        ])
+        ]))
 
     def set_processing(self):
         """Islem suresi."""
-        self.after(0, lambda: [
+        self.after(0, self._safe(lambda: [
             self._dot.configure(text_color=_C["blue"]),
             self._status_label.configure(
                 text=t("processing"), text_color=_C["blue"]
             ),
-        ])
+        ]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

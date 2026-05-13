@@ -70,20 +70,35 @@ from gui.config import ConfigManager
 def main():
     parser = argparse.ArgumentParser(description="Gemma Echo v8 — 4 Modlu Hibrit Ceviri Sistemi")
     parser.add_argument(
-        "--mode", type=str, default="interactive",
-        choices=["online", "online_xtts", "interactive", "offline", "offline_gpu", "hybrid_cloud_io", "hybrid_cloud_stt", "online_local_stt"],
-        help="Calisma modu: online, online_xtts, interactive (varsayilan), offline, offline_gpu, hybrid_cloud_io, hybrid_cloud_stt, online_local_stt"
+        "--gui", action="store_true",
+        help="Görsel Arayüzü (GUI) Başlat (Varsayılan)"
     )
     parser.add_argument(
-        "--input", type=str, default="audio/Kayıt (3).wav",
-        help="Islenecek ses dosyasi (--live kullanilmiyorsa)"
+        "--mode", type=str, default="interactive",
+        choices=["online", "online_xtts", "interactive", "offline", "offline_gpu", "hybrid_cloud_io", "hybrid_cloud_stt", "online_local_stt"],
+        help="Çalışma modu: online, online_xtts, interactive, offline vb."
+    )
+    parser.add_argument(
+        "--input", type=str, default=None,
+        help="İşlenecek ses dosyası (CLI testi için)"
     )
     parser.add_argument(
         "--live", action="store_true",
-        help="Canli mikrofon modunu baslat (VAD tabanli, Ctrl+C ile dur)"
+        help="Canlı terminal modu (Mikrofon VAD)"
     )
     args = parser.parse_args()
 
+    # EĞER bir girdi belirtilmemişse ve canlı mod istenmemişse -> DİREKT GUI BAŞLAT
+    is_cli = args.live or (args.input is not None)
+    
+    if not is_cli:
+        log.info("Hiçbir CLI argümanı bulunamadı. Görsel Arayüz (GUI) başlatılıyor...")
+        from gui.app import GemmaEchoApp
+        app = GemmaEchoApp()
+        app.run()
+        return
+
+    # --- Aksi takdirde TERMINAL MOTORU ---
     log.info("═" * 58)
     log.info("      GEMMA ECHO v8 — QUAD-STATE ORKESTRA SEFİ")
     log.info(f"      Mod: {args.mode.upper()}" + (" | CANLI MİKROFON" if args.live else ""))
@@ -97,11 +112,11 @@ def main():
     log.info("Başlatma: [3/3] TTS modülü...")
     synthesizer = Synthesizer()
 
-    # 2. Orkestrasyonu Kur (başlangıç moduyla)
+    # 2. Orkestrasyonu Kur
     cfg = ConfigManager()
     orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode, config=cfg)
 
-    # 3. Isıt (Cold-Start Warm-up)
+    # 3. Isıt
     orchestrator.warm_up()
 
     # 4. İşlemi Başlat

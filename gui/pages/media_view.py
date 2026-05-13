@@ -3,6 +3,7 @@ Gemma Echo — Medya Çeviri ve Dublaj Ekranı (Media View)
 """
 
 import os
+import sys
 import time
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ class MediaView(ctk.CTkFrame):
         self._processing  = False
         self._dubbing     = False
         self._ffmpeg_proc = None
+        self._last_output_path = None
         self._build()
 
     def _build(self):
@@ -176,6 +178,14 @@ class MediaView(ctk.CTkFrame):
         )
         self._elapsed.pack(side="right", padx=16)
 
+        self._btn_open_file = ctk.CTkButton(
+            bot, text=f"\U0001f4c2  {t('open_file')}", height=28, width=100,
+            fg_color="#238636", hover_color="#2ea043", text_color="white",
+            corner_radius=8, font=ctk.CTkFont(size=10, weight="bold"),
+            command=self._handle_open_file
+        )
+        # Initially hidden via pack_forget, packed dynamically
+        
         self._update_language_labels()
 
     # ── Dosya Secimi ──────────────────────────────────────────────────────────
@@ -204,6 +214,11 @@ class MediaView(ctk.CTkFrame):
         self._progress.set(0)
         self._prog_lbl.configure(text=t("ready"), text_color=_C["dim"])
         self._elapsed.configure(text="")
+        self._last_output_path = None
+        try:
+            self._btn_open_file.pack_forget()
+        except Exception:
+            pass
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -246,6 +261,11 @@ class MediaView(ctk.CTkFrame):
         self._btn_process.configure(state="normal")
         self._btn_cancel.configure(state="disabled")
 
+    def on_leave(self):
+        """Kullanıcı farklı bir sayfaya geçtiğinde çalışan işlemi durdur."""
+        if self._processing or self._dubbing:
+            self._cancel()
+
     # ── Dublaj ────────────────────────────────────────────────────────────────
 
     def _start_dubbing(self):
@@ -287,6 +307,7 @@ class MediaView(ctk.CTkFrame):
             transcriber=orch.transcriber,
             translator=orch.translator,
             synthesizer=orch.synthesizer,
+            config=self.cfg,
         )
 
         def on_progress(fraction, msg, color):
@@ -294,10 +315,8 @@ class MediaView(ctk.CTkFrame):
 
         try:
             dubber.process(src, output_path, progress_cb=on_progress)
-            self.after(0, lambda: self._elapsed.configure(
-                text=t("output_path", os.path.basename(output_path)),
-                text_color=_C["green"]
-            ))
+            self._last_output_path = output_path
+            self.after(0, self._on_dubbing_complete)
         except Exception as e:
             self._set_progress(0, t("dubbing_error", str(e)), _C["red"])
         finally:
@@ -418,12 +437,41 @@ class MediaView(ctk.CTkFrame):
 
         parts = []
         total = len(chunks)
+        prev_translation = ""
+        rolling_summary = ""
+
         for i, chunk in enumerate(chunks):
             if not self._processing:
                 break
             p = 0.55 + 0.40 * (i / total)
             self._set_progress(p, f"Ceviri: {i+1}/{total} bolum", _C["blue"])
-            parts.append(translator.translate(chunk, src_lang=src_lang, tgt_lang=tgt_lang, src_name=src_name, tgt_name=tgt_name).get("translation", chunk))
+            try:
+                result = translator.translate(
+                    chunk,
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    src_name=src_name,
+                    tgt_name=tgt_name,
+                    prev_translation=prev_translation,
+                    rolling_summary=rolling_summary,
+                )
+                chunk_translation = result.get("translation", chunk)
+            except Exception as e:
+                # Tek bir chunk'ta hata olsa bile kalan çeviri devam etsin.
+                chunk_translation = chunk
+                self._set_progress(0, f"{t('error')}: {e}", _C["red"])
+
+            parts.append(chunk_translation)
+            prev_translation = chunk_translation
+
+            if (i + 1) % 3 == 0 or i == 0:
+                try:
+                    rolling_summary = translator.generate_summary(chunk_translation, rolling_summary)
+                except Exception:
+                    pass
+
+            self._set_text(self._en_box, " ".join(parts), _C["text"])
+
         return " ".join(parts)
 
     def _save(self, kind: str):
@@ -453,8 +501,23 @@ class MediaView(ctk.CTkFrame):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            self._notify_shell(path)
             self.cfg.set("file_mode", "output_dir", os.path.dirname(path))
             self.cfg.save()
+
+    def _notify_shell(self, path: str):
+        """Windows Explorer'a yeni dosyayi bildirir (klasor goruntusu hemen yenilensin)."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            ctypes.windll.shell32.SHChangeNotify(
+                0x00000002, 0x0005, ctypes.c_wchar_p(path), None
+            )
+        except Exception:
+            pass
 
     def _update_language_labels(self):
         from gui.i18n import get_language
@@ -490,8 +553,35 @@ class MediaView(ctk.CTkFrame):
         self._btn_save_src.configure(text=btn_src_text)
         self._btn_save_tgt.configure(text=btn_tgt_text)
         self._btn_save_both.configure(text=t("save_both"))
+        self._btn_open_file.configure(text=f"\U0001f4c2  {t('open_file')}")
 
-    # ── Thread-safe yardimcilar ───────────────────────────────────────────────
+    def _on_dubbing_complete(self):
+        """Handle successful completion of dubbing pipeline."""
+        if self._last_output_path:
+            filename = os.path.basename(self._last_output_path)
+            self._elapsed.configure(
+                text=t("output_path", filename),
+                text_color=_C["green"]
+            )
+            # Show the open file button immediately to the left of elapsed label
+            self._elapsed.pack_forget()
+            self._btn_open_file.pack(side="right", padx=(0, 16), pady=8)
+            self._elapsed.pack(side="right", padx=(0, 12))
+
+    def _handle_open_file(self):
+        """Open the final dubbed media file or its folder in file explorer."""
+        if not self._last_output_path or not os.path.exists(self._last_output_path):
+            return
+        
+        try:
+            if sys.platform == "win32":
+                os.startfile(self._last_output_path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", self._last_output_path])
+            else:
+                subprocess.run(["xdg-open", self._last_output_path])
+        except Exception as e:
+             messagebox.showerror("Error", f"Could not open file: {e}")
 
     def _set_progress(self, val: float, msg: str, color: str = None):
         def _u():
