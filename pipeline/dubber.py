@@ -16,6 +16,7 @@ Cikti: <kaynak_video>_dubbed.mp4
 """
 
 import os
+import re
 import wave
 import subprocess
 import numpy as np
@@ -41,14 +42,19 @@ class DubbingPipeline:
     # ═══════════════════════════════════════════════════════════
 
     def process(self, video_path: str, output_path: str, src_lang="tr", tgt_lang="en", 
-                src_name="Turkish", tgt_name="English", progress_cb=None):
+                src_name="Turkish", tgt_name="English", progress_cb=None,
+                transcript_cb=None, translation_cb=None):
         """
         Tam dublaj pipeline'ini calistirir.
 
         Args:
-            video_path:  Kaynak video (mp4, mkv, avi, ...)
-            output_path: Cikti yolu (<video>_dubbed.mp4)
-            progress_cb: (fraction, msg, color) -> None  [GUI koprusu]
+            video_path:    Kaynak video (mp4, mkv, avi, ...)
+            output_path:   Cikti yolu (<video>_dubbed.mp4)
+            progress_cb:   (fraction, msg, color) -> None  [GUI ilerleme cubugu]
+            transcript_cb: (segments_list) -> None  [Whisper biter bitmez tum
+                           segmentleri verir; her segment dict: start/end/text]
+            translation_cb:(idx, total, english_text) -> None  [her segment
+                           cevrildiginde anlik bilgi]
 
         Returns:
             output_path (basarida)
@@ -99,10 +105,24 @@ class DubbingPipeline:
             # olustur. Hem cevirinin baglami iyilesir, hem TTS kalitesi artar.
             raw_count = len(segments)
             segments = self._merge_short_segments(segments)
-            if len(segments) < raw_count:
-                prog(0.22, f"{raw_count} segment -> {len(segments)} (kisa segmentler birlestirildi).", "#23d05e")
+            # Proaktif konsolidasyon: 6-14sn'lik bloklara grupla.
+            # LLM cagrisi ~%50 azalir, XTTS daha dogal prosody uretir.
+            after_short = len(segments)
+            segments = self._consolidate_segments(segments)
+            final_count = len(segments)
+            if final_count < raw_count:
+                prog(0.22, f"{raw_count} segment -> {after_short} (kisa) -> {final_count} (konsolide bloklar).", "#23d05e")
             else:
-                prog(0.22, f"{len(segments)} segment tanindi.", "#23d05e")
+                prog(0.22, f"{final_count} segment tanindi.", "#23d05e")
+
+            # GUI: Whisper transkript hazir, kaynak metni hemen kullaniciya goster.
+            # Boylece kullanici cevirinin gelmesini beklemeden tanimanin dogrulugunu
+            # gozden gecirebilir.
+            if transcript_cb:
+                try:
+                    transcript_cb([dict(s) for s in segments])
+                except Exception:
+                    pass  # GUI hatasi pipeline'i dursurmasin
 
             # ── VRAM serbest bırak: Whisper bitti, sırayla LLM ve XTTS gelecek ──
             # 6GB GPU'da Whisper(~1GB) + Gemma 8192ctx(~4GB) + XTTS(~2GB) = ~7GB sığmaz.
@@ -159,6 +179,13 @@ class DubbingPipeline:
                 translated.append({**seg, "text_en": text_en})
                 prev_translation = text_en
 
+                # GUI: bu segmentin cevirisi hazir; anlik panele yansisin.
+                if translation_cb:
+                    try:
+                        translation_cb(i, total, text_en)
+                    except Exception:
+                        pass  # GUI hatasi pipeline'i dursurmasin
+
                 # Her 5 segmentte bir rolling summary guncelle (kitap ceviri pattern'i).
                 # Segmentler kisa oldugu icin 3 yerine 5 — gereksiz LLM cagrisi azaltir.
                 if (i + 1) % 5 == 0 or i == 0:
@@ -199,9 +226,15 @@ class DubbingPipeline:
                 if not seg.get("text_en"):
                     continue
 
+                # XTTS-v2 emoji/markdown/cok kisa metinlerde halusinasyon yapar.
+                # Burada budayip, gerekirse segmenti atliyoruz (sessizlik kalir).
+                clean_text = self._clean_text_for_tts(seg["text_en"])
+                if not clean_text:
+                    continue
+
                 out_wav = os.path.join(self._tmp_dir, f"dub_seg_{i:04d}.wav")
                 self._synthesize_segment(
-                    seg["text_en"], gpt_latent, spk_emb, out_wav
+                    clean_text, gpt_latent, spk_emb, out_wav
                 )
                 seg_wavs[i] = out_wav
 
@@ -365,6 +398,73 @@ class DubbingPipeline:
             merged.append(dict(seg))
         return merged
 
+    def _consolidate_segments(self, segments: list) -> list:
+        """Whisper segmentlerini 6-14sn'lik mantiksal bloklara grupla.
+
+        `_merge_short_segments`'ten farkli: o sadece kritik kisa parcalari
+        kurtariyor. Bu fonksiyon ise **tum segmentleri** proaktif olarak
+        daha buyuk bloklara birlestirir.
+
+        Faydalari:
+          - LLM cagri sayisi yaklasik yariya iner (kota dostu, hizli)
+          - XTTS daha uzun ve dogal cumleler alir -> prosody kalitesi artar,
+            robotik his azalir
+          - Cumleler arasi baglam butunlugu korunur
+
+        Birlestirme kurallari (oncelik sirasiyla):
+          1. Blok suresi TARGET_MIN'i (6s) gectiyse VE mevcut metin cumle sonu
+             noktalama ile bitiyorsa -> blogu kapat (dogal cumle siniri)
+          2. Iki segment arasi bosluk > MAX_GAP (0.8s) -> blogu kapat
+             (uzun durus, muhtemel cumle/konu degisimi)
+          3. Birlestiginde TARGET_MAX'i (14s) asiyorsa -> blogu kapat
+             (XTTS uzun text'te kalitesini kaybeder)
+          4. Yukaridakilerin hicbiri degilse -> birlestir
+        """
+        if not segments:
+            return segments
+
+        TARGET_MIN = 6.0     # blok bu suresinin altindaysa cumle sonu olsa bile kapatma
+        TARGET_MAX = 14.0    # blok bu sureyi gecemez
+        MAX_GAP    = 0.8     # ardisik segmentler arasi tolere edilen bosluk
+        SENT_END   = (".", "!", "?")
+
+        consolidated = []
+        current = None
+
+        for seg in segments:
+            if current is None:
+                current = dict(seg)
+                continue
+
+            gap = seg["start"] - current["end"]
+            merged_dur = seg["end"] - current["start"]
+            current_dur = current["end"] - current["start"]
+            current_text = current["text"].rstrip()
+            ends_sentence = current_text.endswith(SENT_END)
+
+            # Blok kapatma kararlari
+            close_block = False
+            if merged_dur > TARGET_MAX:
+                close_block = True
+            elif gap > MAX_GAP:
+                close_block = True
+            elif ends_sentence and current_dur >= TARGET_MIN:
+                close_block = True
+
+            if close_block:
+                consolidated.append(current)
+                current = dict(seg)
+            else:
+                # Birlestir
+                current["end"] = seg["end"]
+                sep = " " if not current["text"].rstrip().endswith("-") else ""
+                current["text"] = (current["text"].rstrip() + sep + seg["text"].lstrip()).strip()
+
+        if current is not None:
+            consolidated.append(current)
+
+        return consolidated
+
     # ═══════════════════════════════════════════════════════════
     # ADIM 4: REFERANS SES
     # ═══════════════════════════════════════════════════════════
@@ -384,7 +484,9 @@ class DubbingPipeline:
 
         Returns: Liste halinde wav dosya yollari (1-3 adet).
         """
-        # Aday segmentler: 4-10 saniye araliginda
+        # Aday segmentler: 4-10 saniye araliginda — burada **bol** topla,
+        # sonra kalite skoruyla en iyi 3'u secelim. Ne kadar cok aday, o kadar
+        # secici olabiliriz (gurultulu/muzikli segmentleri eleriz).
         candidates = [s for s in segments
                       if 4.0 <= (s["end"] - s["start"]) <= 10.0]
 
@@ -393,9 +495,9 @@ class DubbingPipeline:
             candidates = sorted(segments, key=lambda s: s["end"] - s["start"],
                                 reverse=True)[:1]
         else:
-            # En uzun 3'u (XTTS multi-ref icin yeterli)
+            # En uzun 10 adayi al — 3'unu skor ile sececegiz
             candidates = sorted(candidates, key=lambda s: s["end"] - s["start"],
-                                reverse=True)[:3]
+                                reverse=True)[:10]
 
         # silenceremove: bas tarafta 0.1sn sessizligi -40dB esikle kirp,
         # areverse ile son tarafta da ayni islemi tekrarla
@@ -406,9 +508,13 @@ class DubbingPipeline:
             "areverse"
         )
 
-        ref_paths = []
+        # Her adayi cikar + skorla. Skorlama mantigi `_score_reference_wav`'da:
+        #   yuksek mean_rms (cok kisik degil) +
+        #   dusuk rms varyansi (konusma tonu kararli, muzik degil) +
+        #   dusuk silence ratio (yarisi sessizlik degil) -> yuksek skor.
+        scored = []  # [(score, wav_path, seg)]
         for i, seg in enumerate(candidates):
-            out = os.path.join(self._tmp_dir, f"dub_ref_{i}.wav")
+            out = os.path.join(self._tmp_dir, f"dub_ref_cand_{i}.wav")
             end_s = min(seg["end"], seg["start"] + 10.0)
             r = subprocess.run(
                 ["ffmpeg", "-y", "-i", wav_path,
@@ -417,20 +523,34 @@ class DubbingPipeline:
                  "-ar", "22050", "-ac", "1", out],
                 capture_output=True, timeout=30
             )
-            if r.returncode == 0 and os.path.exists(out):
-                # Minimum 2sn — daha kisa ref XTTS icin yetersiz
-                try:
-                    dur = self._get_wav_duration(out)
-                    if dur >= 2.0:
-                        ref_paths.append(out)
-                        continue
-                except Exception:
-                    pass
-                # 2sn'den kisa veya okunamadi: dosyayi sil
-                try:
+            if r.returncode != 0 or not os.path.exists(out):
+                continue
+            try:
+                dur = self._get_wav_duration(out)
+                if dur < 2.0:
                     os.remove(out)
-                except OSError:
-                    pass
+                    continue
+            except Exception:
+                continue
+            score = self._score_reference_wav(out)
+            if score <= 0.0:
+                # Sessizlik ya da bozuk, ele
+                try: os.remove(out)
+                except OSError: pass
+                continue
+            scored.append((score, out, seg))
+
+        # En iyi 3 skoru sec, gerisini sil
+        scored.sort(key=lambda x: x[0], reverse=True)
+        ref_paths = [p for (_, p, _) in scored[:3]]
+        for _, p, _ in scored[3:]:
+            try: os.remove(p)
+            except OSError: pass
+
+        if ref_paths:
+            top_scores = [f"{s:.3f}" for (s, _, _) in scored[:len(ref_paths)]]
+            print(f"[DUBBER] Referans secimi: {len(ref_paths)} aday "
+                  f"(skorlar: {', '.join(top_scores)})")
 
         # Hicbir aday yeterli olmazsa: ilk 8sn'yi cig al (son care)
         if not ref_paths:
@@ -449,6 +569,92 @@ class DubbingPipeline:
     # ═══════════════════════════════════════════════════════════
     # ADIM 5: XTTS SES KLONLAMA
     # ═══════════════════════════════════════════════════════════
+
+    def _score_reference_wav(self, wav_path: str) -> float:
+        """Bir referans wav'inin XTTS icin uygunlugunu skorlar.
+
+        Skorlama mantigi:
+          - mean_rms: ortalama enerji. Cok kisik (uzak/yankili) sesi cezalandirir.
+          - rms_kararliligi (1 / (1 + std/mean)): muzik veya degisken arka plan
+            yuksek varyans uretir; konusma tonu daha kararlidir.
+          - silence_ratio: 100ms penceredeki sessiz oranlari. Yuksek olmasi
+            referans icindeki bos zamanlari isaretler; kotu sinyal.
+          - clipping_ratio: |x| > 0.99 olan ornek orani. Distorted ses XTTS'i
+            sapitir.
+
+        Returns: 0.0 = kotu/atilmali, ~0.10-0.30 = normal konusma, daha yuksek = ideal.
+        """
+        try:
+            with wave.open(wav_path, "rb") as wf:
+                sw = wf.getsampwidth()
+                sr = wf.getframerate()
+                n = wf.getnframes()
+                raw = wf.readframes(n)
+            if sw == 2:
+                x = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            elif sw == 4:
+                x = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+            else:
+                return 0.0
+            if len(x) < sr * 1.5:
+                return 0.0
+
+            # 100ms pencere RMS
+            w = max(1, sr // 10)
+            n_w = len(x) // w
+            if n_w < 5:
+                return 0.0
+            frames = x[:n_w * w].reshape(n_w, w)
+            rms_pw = np.sqrt(np.mean(frames ** 2, axis=1) + 1e-12)
+            mean_rms = float(rms_pw.mean())
+            std_rms = float(rms_pw.std())
+            silence_ratio = float((rms_pw < 0.01).mean())
+            clipping_ratio = float((np.abs(x) > 0.99).mean())
+
+            # Cok kisik ya da cok bos: ele
+            if mean_rms < 0.015 or silence_ratio > 0.5:
+                return 0.0
+            # Asiri clipping: distorted, ele
+            if clipping_ratio > 0.02:
+                return 0.0
+
+            consistency = 1.0 / (1.0 + std_rms / (mean_rms + 1e-6))
+            score = mean_rms * consistency * (1.0 - silence_ratio) * (1.0 - clipping_ratio)
+            return float(score)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _clean_text_for_tts(text: str) -> str:
+        """XTTS'e gondermeden once metni temizle.
+
+        XTTS-v2 hassas: emoji, fazla noktalama, markdown isaretleri, parantez
+        icindeki yan aciklamalar ("(laughs)", "[music]") ile karsilasinca
+        halusinasyon yapar/sapitir. Burada bunlari budariz.
+
+        Returns: temiz metin, ya da cok kisa/anlamsizsa "" (segment atlanir).
+        """
+        if not text:
+            return ""
+        s = text.strip()
+        # Markdown ve tirnak/asteriks
+        s = re.sub(r"[*_~`#]+", "", s)
+        s = s.replace("\u201c", "").replace("\u201d", "").replace("\u2018", "").replace("\u2019", "'")
+        s = s.replace('"', "")
+        # Parantez/koseli parantez icindeki yan aciklamalar (laughs, music vb.)
+        s = re.sub(r"\([^)]{0,40}\)", "", s)
+        s = re.sub(r"\[[^\]]{0,40}\]", "", s)
+        # Emoji ve cogu non-BMP sembol
+        s = re.sub(r"[\U00010000-\U0010ffff]", "", s)
+        # Cok arda gelen ayni noktalama: "..." -> "...", "!!!" -> "!"
+        s = re.sub(r"([.!?,;:])\1{2,}", r"\1\1\1", s)
+        # Cok bosluk
+        s = re.sub(r"\s+", " ", s).strip()
+        # Cok kisa veya sadece noktalama: segment atla
+        alnum = re.sub(r"[^A-Za-z0-9\u00C0-\u017F]", "", s)
+        if len(alnum) < 4:
+            return ""
+        return s
 
     def _ensure_xtts_loaded(self):
         """XTTS modelinin GPU'da yuklü olmasini saglar."""
