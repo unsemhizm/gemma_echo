@@ -308,6 +308,10 @@ class BookView(ctk.CTkFrame):
         def on_progress(frac, msg):
             self._set_progress(frac, msg)
 
+        def on_preview(text):
+            # Canli onizleme — textbox'a flush et (her batch sonra cagrilir)
+            self._live_update_output(text)
+
         # B4: Pipeline'a lokalize progress mesajları geç. Anahtar yoksa _DEFAULT_MESSAGES
         # (TR) kullanılır; geri uyumlu.
         messages = self._build_progress_messages()
@@ -315,14 +319,26 @@ class BookView(ctk.CTkFrame):
         result = ""
         had_error = False
         try:
-            result = self._dt.translate_file(
-                file_path=file_path,
-                src_lang=src_lang,
-                tgt_lang=tgt_lang,
-                output_path=None,          # GUI kaydetme dugmesini kullanir
-                progress_cb=on_progress,
-                messages=messages,
-            )
+            # Layout korumalı çeviri: DOCX/PDF için stilleri koru
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in [".docx", ".pdf"]:
+                result = self._dt.translate_file_layout(
+                    file_path=file_path,
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    progress_cb=on_progress,
+                    messages=messages,
+                    preview_cb=on_preview,
+                )
+            else:
+                result = self._dt.translate_file(
+                    file_path=file_path,
+                    src_lang=src_lang,
+                    tgt_lang=tgt_lang,
+                    output_path=None,          # GUI kaydetme dugmesini kullanir
+                    progress_cb=on_progress,
+                    messages=messages,
+                )
         except Exception as e:
             had_error = True
             self._last_error = e
@@ -354,7 +370,12 @@ class BookView(ctk.CTkFrame):
             ))
 
             self._translating = False
-            self._dt = None
+            # NOT: _dt None YAPILMIYOR — kullanici sonra kaydet'e bastiginda
+            # _save() metodu _dt._layout_source_kind ve _dt._docx_staging_path /
+            # _dt._pdf_blocks'a erismek zorunda. Aksi halde her kayit layout
+            # korumasini bypass edip duz _save_docx'e duser. Sonraki ceviri
+            # baslayinca _translation_pipeline yeni bir DocumentTranslator
+            # atayacak — race riski yok cunku _translating flag'i koruyor.
             self.after(0, lambda: [
                 self._btn_start.configure(state="normal"),
                 self._btn_cancel.configure(state="disabled"),
@@ -489,7 +510,13 @@ class BookView(ctk.CTkFrame):
         ext = os.path.splitext(path)[1].lower()
         try:
             if ext == ".docx":
-                self._save_docx(path, text)
+                if hasattr(self, '_dt') and self._dt and self._dt._layout_source_kind:
+                    try:
+                        self._dt.save_layout_docx(path)
+                    except Exception:
+                        self._save_docx(path, text)
+                else:
+                    self._save_docx(path, text)
             else:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
@@ -575,4 +602,33 @@ class BookView(ctk.CTkFrame):
             self._out_box.configure(border_color=highlight)
             self._out_box.see("0.0")
             self.after(1500, lambda: self._out_box.configure(border_color=_C["border"]))
+        self.after(0, _u)
+
+    def _live_update_output(self, text: str):
+        """Cevirinin ortasinda textbox'i akmakta olan ceviriyle gunceller.
+
+        _append_output'tan farki:
+          - Border highlight yok (yanip sonen olmaz)
+          - Scroll'u korur (kullanicinin gordugu yer kaybolmasin)
+
+        preview_cb olarak DocumentTranslator'a gecirilir; her batch sonra cagrilir.
+        """
+        def _u():
+            try:
+                # Mevcut scroll pozisyonunu koru (yview tuple: (top_frac, bottom_frac))
+                yview = self._out_box.yview()
+            except Exception:
+                yview = (0.0, 1.0)
+            self._out_box.configure(state="normal")
+            self._out_box.delete("0.0", "end")
+            self._out_box.insert("0.0", text or "")
+            self._out_box.configure(state="disabled")
+            # Eger kullanici en sondaysa, en sona gitmeye devam et — yoksa pozisyonu koru
+            try:
+                if yview[1] >= 0.98:
+                    self._out_box.see("end")
+                else:
+                    self._out_box.yview_moveto(yview[0])
+            except Exception:
+                pass
         self.after(0, _u)

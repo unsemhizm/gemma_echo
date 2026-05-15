@@ -314,7 +314,12 @@ class MediaView(ctk.CTkFrame):
             self._set_progress(fraction, msg, color)
 
         try:
-            dubber.process(src, output_path, progress_cb=on_progress)
+            dubber.process(
+                src, output_path,
+                progress_cb=on_progress,
+                transcript_cb=self._show_dub_transcript,
+                translation_cb=self._on_dub_translation,
+            )
             self._last_output_path = output_path
             self.after(0, self._on_dubbing_complete)
         except Exception as e:
@@ -600,3 +605,52 @@ class MediaView(ctk.CTkFrame):
                 box.configure(text_color=color)
             box.configure(state="disabled")
         self.after(0, _u)
+
+    # ── Dublaj canli metin gosterimi ──────────────────────────────────────────
+    # Bu iki callback DubbingPipeline.process() icindeki transcript_cb /
+    # translation_cb hook'larina baglanir. Worker thread'den cagrilir, ama
+    # _set_text icindeki self.after(0, ...) main thread'e gectigi icin guvenli.
+
+    @staticmethod
+    def _fmt_seg_time(start: float, end: float) -> str:
+        """5.2, 12.7 -> '0:05-0:12' bicimi."""
+        def mmss(s: float) -> str:
+            s = max(0, int(s))
+            return f"{s // 60}:{s % 60:02d}"
+        return f"{mmss(start)}-{mmss(end)}"
+
+    def _show_dub_transcript(self, segments: list):
+        """Whisper transkript hazir oldugunda her iki paneli baslat.
+
+        Sol panel (TR) tum kaynak segmentlerle anlik dolar. Sag panel (EN)
+        ayni numaralarla placeholder olarak yerlesir; her ceviri geldikce
+        _on_dub_translation icinde guncellenir.
+        """
+        self._dub_segments = list(segments)
+        self._dub_translations = [""] * len(segments)
+        tr_lines, en_lines = [], []
+        for i, s in enumerate(segments):
+            ts = self._fmt_seg_time(s["start"], s["end"])
+            tr_lines.append(f"[{i+1:02d}] {ts}  {s['text']}")
+            en_lines.append(f"[{i+1:02d}] {ts}  ...")
+        self._set_text(self._tr_box, "\n".join(tr_lines))
+        self._set_text(self._en_box, "\n".join(en_lines), _C["dim"])
+
+    def _on_dub_translation(self, idx: int, total: int, text_en: str):
+        """Bir segmentin Ingilizce cevirisi tamamlandi; EN panelini yenile."""
+        if not hasattr(self, "_dub_translations") or not self._dub_translations:
+            return
+        if idx < 0 or idx >= len(self._dub_translations):
+            return
+        self._dub_translations[idx] = text_en or ""
+        en_lines = []
+        for i, s in enumerate(self._dub_segments):
+            ts = self._fmt_seg_time(s["start"], s["end"])
+            translation = self._dub_translations[i] or "..."
+            en_lines.append(f"[{i+1:02d}] {ts}  {translation}")
+        # Tum ceviriler tamamlandiysa rengi normal'e cek; yoksa dim kalsin
+        all_done = all(t for t in self._dub_translations)
+        self._set_text(
+            self._en_box, "\n".join(en_lines),
+            _C["text"] if all_done else _C["dim"]
+        )

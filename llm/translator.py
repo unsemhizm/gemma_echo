@@ -396,26 +396,34 @@ class Translator:
     def _maybe_trigger_quota_cooldown(self, exc: Exception, model_name: str):
         """429 RESOURCE_EXHAUSTED algılandığında online katmanı geçici devre dışı bırakır.
 
-        - İlk 429: 60s cooldown
-        - Ardışık her 429: cooldown 2x (60s → 120s → 240s → ... cap 1800s/30dk)
-        - Bu sayede free-tier kotası bittiğinde her chunk için 20-30s timeout ziyan etmiyoruz;
-          tüm akış direkt offline'a iner.
-
-        Detection: exception string'inde "429" veya "RESOURCE_EXHAUSTED" arar
-        (Google google.genai.errors.ClientError'ın hem code'u hem mesajı eşleşir).
+        Detection: exception string'inde "429" veya "RESOURCE_EXHAUSTED" arar.
         """
         msg = str(exc)
         if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg:
-            return  # quota dışı bir hata — cooldown başlatma
+            return  # quota dışı bir hata — _trigger_online_failure_cooldown 2-katman seviyesinde sayar
+        self._trigger_online_failure_cooldown(model_name, reason="429")
 
+    def _trigger_online_failure_cooldown(self, model_name: str, reason: str = "failure"):
+        """Online katmanın 'tamamen başarısız' olduğu durumlarda cooldown başlatır.
+
+        Tetikleyiciler:
+          - 429 RESOURCE_EXHAUSTED (kota)
+          - Hem Gemma-4 hem Flash zaman aşımı (her chunk için 240s+ ziyan)
+          - Aynı anda her iki katmanda başarısız olma
+
+        Cooldown formülü:
+          - İlk başarısızlık: 180s (3dk)
+          - Ardışık her başarısızlık: 2x (3dk → 6dk → 12dk → ... cap 60dk)
+          - Free-tier 20/dk limiti bittiğinde tüm akış instant offline'a iner;
+            kullanıcı her chunk için 2dk timeout beklemez.
+        """
         self._consecutive_quota_errors += 1
-        # 60s × 2^(n-1), cap 1800s (30dk)
-        cooldown_sec = min(1800, 60 * (2 ** (self._consecutive_quota_errors - 1)))
+        cooldown_sec = min(3600, 180 * (2 ** (self._consecutive_quota_errors - 1)))
         self._online_cooldown_until = time.time() + cooldown_sec
         log.warning(
-            f"⚠ Kota tükendi ({model_name}, 429). "
-            f"Online katman {cooldown_sec}s ({cooldown_sec // 60}dk) süreyle devre dışı, "
-            f"offline mod kullanılacak. (ardışık quota hatası: {self._consecutive_quota_errors})"
+            f"⚠ Online cooldown ({reason}, {model_name}): "
+            f"{cooldown_sec}s ({cooldown_sec // 60}dk) süreyle bulut katmanları skip. "
+            f"(ardışık başarısızlık: {self._consecutive_quota_errors})"
         )
 
     def _gemini_call(self, model_name: str, user_message: str, timeout: float = 20.0, max_output_tokens: int = 300):
@@ -556,6 +564,12 @@ class Translator:
         # 200 kelime → 800, 1024 kelime → 4096 cap.
         dynamic_max_tokens = min(4096, max(600, input_words * 4))
 
+        # Bu cagrida hangi katmanlarin basarisiz oldugunu takip et — IKISI DE
+        # basarisizsa cooldown tetikle (timeout fark etmeksizin), boylece sonraki
+        # chunk'lar bulut katmanlarini direkt skip etsin.
+        gemma4_failed_reason = None
+        flash_failed_reason = None
+
         # --- KATMAN 1: GEMINI API (GEMMA 4) ---
         gemini_gemma_start = time.time()
         try:
@@ -569,12 +583,14 @@ class Translator:
             }
         except TimeoutError:
             log.warning(f"Gemini API ({self.gemma4_api_model}) Zaman Aşımı ({gemma4_timeout}s) -> Gemini 2.5 Flash'a geçiliyor...")
+            gemma4_failed_reason = "timeout"
         except Exception as e:
             self._maybe_trigger_quota_cooldown(e, self.gemma4_api_model)
             log.warning(
                 f"Gemini API ({self.gemma4_api_model}) hatası -> Gemini 2.5 Flash'a geçiliyor.",
                 exc_info=True
             )
+            gemma4_failed_reason = "error"
 
         # --- KATMAN 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
@@ -589,9 +605,22 @@ class Translator:
             }
         except TimeoutError:
             log.warning(f"Gemini 2.5 Flash Zaman Aşımı ({flash_timeout}s). Yerel modele düşülüyor...")
+            flash_failed_reason = "timeout"
         except Exception as e:
             self._maybe_trigger_quota_cooldown(e, self.gemini_fallback_model)
             log.warning("Gemini 2.5 Flash hatası. Yerel modele düşülüyor.", exc_info=True)
+            flash_failed_reason = "error"
+
+        # IKI KATMAN DA BASARISIZ — cooldown tetikle (timeout veya error fark etmez).
+        # _maybe_trigger_quota_cooldown sadece 429'da counter artirir; timeout durumunda
+        # buradan agresif cooldown baslamali ki sonraki chunk 240s daha ziyan etmesin.
+        if gemma4_failed_reason and flash_failed_reason:
+            # Quota cooldown zaten artmissa tekrar artirma (cift sayim olmasin)
+            if self._consecutive_quota_errors == 0 or (time.time() >= self._online_cooldown_until):
+                self._trigger_online_failure_cooldown(
+                    "both_layers",
+                    reason=f"gemma4_{gemma4_failed_reason}+flash_{flash_failed_reason}"
+                )
 
         # --- KATMAN 3: YEREL OFFLINE MODEL FALLBACK (Kesintisiz Hizmet) ---
         log.warning("Tüm Bulut API'leri başarısız! Yerel Gemma Modeli (GGUF) devreye sokuluyor...")

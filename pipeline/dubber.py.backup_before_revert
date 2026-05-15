@@ -219,6 +219,7 @@ class DubbingPipeline:
 
             # ── 5b. Her segment icin ses sentezi ─────────────────────
             seg_wavs = [None] * total
+            skipped_segments = []  # (idx, text, reason) — son raporda kullan
             for i, seg in enumerate(translated):
                 p = 0.60 + 0.28 * (i / total)
                 prog(p, f"Ses sentezi: {i+1}/{total}", "#5b9ef9")
@@ -230,15 +231,28 @@ class DubbingPipeline:
                 # Burada budayip, gerekirse segmenti atliyoruz (sessizlik kalir).
                 clean_text = self._clean_text_for_tts(seg["text_en"])
                 if not clean_text:
+                    skipped_segments.append((i, seg["text_en"], "empty_after_cleanup"))
                     continue
 
                 out_wav = os.path.join(self._tmp_dir, f"dub_seg_{i:04d}.wav")
-                self._synthesize_segment(
+                ok = self._synthesize_segment(
                     clean_text, gpt_latent, spk_emb, out_wav
                 )
-                seg_wavs[i] = out_wav
+                if ok:
+                    seg_wavs[i] = out_wav
+                else:
+                    # Sentez basarisiz — logla, sessizlik birakilacak
+                    skipped_segments.append((i, seg["text_en"], "synthesis_failed"))
 
-            # ── 6. Timeline assembly ──────────────────────────────────
+            # Atlanan segmentleri raporla — sessizce kaybolmasin
+            if skipped_segments:
+                print(f"[DUBBER] UYARI: {len(skipped_segments)}/{total} segment atlandi:")
+                for idx, txt, reason in skipped_segments[:10]:
+                    print(f"  [{idx}] ({reason}): {txt[:60]}")
+                if len(skipped_segments) > 10:
+                    print(f"  ... ve {len(skipped_segments) - 10} tane daha")
+
+            # ── 6. Timeline assembly ──────────────────────────────
             prog(0.89, "Ses parcalari timeline'a yerlestiriliyor...", "#f5a623")
             dubbed_wav = os.path.join(self._tmp_dir, "dubbed_full.wav")
             self._assemble_audio(translated, seg_wavs, video_duration, dubbed_wav)
@@ -331,20 +345,27 @@ class DubbingPipeline:
                 language=language,
                 beam_size=5,                          # 2 -> 5 (daha iyi arama, +%10 dogruluk)
                 best_of=5,                            # 2 -> 5
-                # VAD KAPALI: Faster-Whisper VAD agresif davranip uzun konusma
-                # parcalarini "sessizlik" sayip atiyor. VAD sadece XTTS referans
-                # ses cikarmada (gurultu/muzik filtreleme icin) kullanilmali —
-                # transkripsiyonda hicbir konusma kaybi olmasin.
+                # VAD KAPALI: Silero VAD muzik/efekt karisik konusmayi
+                # "konusma degil" diye yutuyor ve Whisper o kismi hic gormuyor.
+                # Whisper kendi no_speech_prob'una guvenelim — gercekten sessiz
+                # frame'leri zaten ayikliyor. Transkript suresi +%20-40 olabilir
+                # ama dublaj batch is, kalite > hiz.
                 vad_filter=False,
                 condition_on_previous_text=True,      # Baglam yardim eder, hatali metin yapismaz
                 temperature=0.0,                      # Deterministic
                 compression_ratio_threshold=2.4,
                 log_prob_threshold=-1.0,
-                no_speech_threshold=0.5,
+                # VAD yokken Whisper'in kendi konusma esigi onemli. Cok dusuk
+                # tutarsak muzikten halusinasyon yapar; cok yuksekse sessiz
+                # konusmayi atar. 0.6 makul orta nokta.
+                no_speech_threshold=0.6,
             )
             result = []
             for seg in segments_iter:
-                if seg.no_speech_prob > 0.5:
+                # Ust filtre: Whisper'in kendi karari + bizim koruma esigimiz.
+                # Halusinasyon (muzikten yanlis transkript) riski varsa burada
+                # yakalanir; 0.7 yeterince gevsek ki gercek konusma elenmesin.
+                if seg.no_speech_prob > 0.7:
                     continue
                 text = seg.text.strip()
                 if not text:
@@ -472,42 +493,138 @@ class DubbingPipeline:
     # ADIM 4: REFERANS SES
     # ═══════════════════════════════════════════════════════════
 
+    def _find_clean_speech_windows(self, wav_path: str) -> list:
+        """Silero VAD ile **saf konusma** pencerelerini bul (muzik/sessizlik yok).
+
+        Whisper transkriptinde VAD KAPALI cunku oradaki amac tum konusmayi
+        yakalamak (muzikli kisimlar dahil). Ama XTTS referansi icin TAM TERSI
+        gerekiyor: sadece sessiz arka planli, kesintisiz konusma.
+
+        Bu yuzden burada sikica VAD kullaniyoruz:
+          - threshold=0.6: Silero "konusma var" demek icin yuksek guven istesin
+          - min_silence=400ms: kucuk duraksamalari muzik gibi gorme
+          - speech_pad=200ms: kelime kenarlarini koruma payi
+
+        Sonra ardisik chunklari max 0.5sn boslukla birlestiriyoruz; ortaya
+        cikan continuous bloklarin 5-12sn olanlari "temiz pencere" oluyor.
+
+        Returns: [{"start": float_sec, "end": float_sec}, ...] (bos olabilir)
+        """
+        try:
+            from faster_whisper.audio import decode_audio
+            from faster_whisper.vad import get_speech_timestamps, VadOptions
+        except Exception as e:
+            print(f"[DUBBER] Silero VAD yuklenemedi ({e}); Whisper segmentlerine dusulecek.")
+            return []
+
+        try:
+            audio = decode_audio(wav_path, sampling_rate=16000)
+            opts = VadOptions(
+                threshold=0.6,                  # daha yuksek -> daha emin konusma
+                min_speech_duration_ms=500,
+                min_silence_duration_ms=400,
+                speech_pad_ms=200,
+            )
+            chunks = get_speech_timestamps(audio, opts)
+        except Exception as e:
+            print(f"[DUBBER] Silero VAD calisma hatasi ({e}); Whisper segmentlerine dusulecek.")
+            return []
+
+        if not chunks:
+            return []
+
+        # Sample -> saniye
+        SR = 16000
+        regions = [(c["start"] / SR, c["end"] / SR) for c in chunks]
+
+        # Bitisik chunklari birlestir (gap < 0.5sn): tek nefeste konusulan
+        # cumleler genelde Silero icin parcali gelir, biz bunlari toplayip
+        # 5-12sn'lik bloklara cikariyoruz
+        merged = []
+        cur_s, cur_e = regions[0]
+        for s, e in regions[1:]:
+            if s - cur_e <= 0.5:
+                cur_e = e
+            else:
+                merged.append((cur_s, cur_e))
+                cur_s, cur_e = s, e
+        merged.append((cur_s, cur_e))
+
+        # 5-12sn arasinda olan blokar referans icin ideal
+        windows = [
+            {"start": s, "end": min(e, s + 10.0)}
+            for s, e in merged
+            if 5.0 <= (e - s) <= 25.0  # cok uzun bloklar ic guruluti birikmis olabilir
+        ]
+        # Eger 5sn'den uzun yoksa, en uzun 3 saf bolgeyi al (ne bulduysak onu)
+        if not windows and merged:
+            merged.sort(key=lambda r: r[1] - r[0], reverse=True)
+            windows = [
+                {"start": s, "end": min(e, s + 10.0)}
+                for s, e in merged[:3]
+                if (e - s) >= 3.0
+            ]
+        return windows
+
     def _extract_reference(self, wav_path: str, segments: list) -> list:
         """Konusmaci klonlamasi icin coklu referans ses cikarir.
 
         XTTS-v2 birden fazla referans kabul eder; bu konusmaci identity'sini
         sabitler ve tek bir bozuk segmentin (muzik, gurultu) etkisini azaltir.
 
-        Strateji:
-          - 4-10 saniye araliginda olan segmentleri tercih et (cok kisa = az bilgi,
-            cok uzun = arka plan gurultusu birikir)
-          - En uzun 3 segmenti seç
-          - Her birinde ffmpeg silenceremove ile bas/son sessizliklerini kirp
-          - Sonuc < 2sn ise o referansi reddet
+        Strateji (decoupled):
+          1. **Once Silero VAD ile saf konusma pencerelerini ara** (muzikli
+             kisimlari otomatik atlar). Whisper transkripti VAD'siz calistigi
+             icin Whisper segmentleri muzik-konusma karisik olabilir; o yuzden
+             onlara direkt guvenmiyoruz.
+          2. VAD penceresi yoksa Whisper segmentlerine dus (eski davranis).
+          3. Her adayi ffmpeg silenceremove ile temizle, kalite skorla.
+          4. Skoru sikica esige tabi tut — bozuk referans XTTS'i robotlastirir.
 
         Returns: Liste halinde wav dosya yollari (1-3 adet).
         """
-        # Aday segmentler: 4-10 saniye araliginda — burada **bol** topla,
-        # sonra kalite skoruyla en iyi 3'u secelim. Ne kadar cok aday, o kadar
-        # secici olabiliriz (gurultulu/muzikli segmentleri eleriz).
-        candidates = [s for s in segments
-                      if 4.0 <= (s["end"] - s["start"]) <= 10.0]
-
-        if not candidates:
-            # Fallback: en uzun 1 segment (her ihtimale karsi)
-            candidates = sorted(segments, key=lambda s: s["end"] - s["start"],
-                                reverse=True)[:1]
+        # 1) Onceligimiz: Silero VAD'in bulduğu **saf** konusma pencereleri.
+        clean_windows = self._find_clean_speech_windows(wav_path)
+        if clean_windows:
+            print(f"[DUBBER] VAD {len(clean_windows)} saf konusma penceresi buldu.")
+            candidates = clean_windows
         else:
-            # En uzun 10 adayi al — 3'unu skor ile sececegiz
-            candidates = sorted(candidates, key=lambda s: s["end"] - s["start"],
-                                reverse=True)[:10]
+            # 2) Whisper segmentlerine dus (eski mantik). VAD bulamadigi durumda
+            # videonun coğu muzikli demektir; en iyisini yapacağiz.
+            print("[DUBBER] VAD saf pencere bulamadi -> Whisper segmentlerine dusuluyor.")
+            candidates = [s for s in segments
+                          if 4.0 <= (s["end"] - s["start"]) <= 10.0]
+            if not candidates:
+                candidates = sorted(segments, key=lambda s: s["end"] - s["start"],
+                                    reverse=True)[:1]
+            else:
+                candidates = sorted(candidates, key=lambda s: s["end"] - s["start"],
+                                    reverse=True)[:10]
 
-        # silenceremove: bas tarafta 0.1sn sessizligi -40dB esikle kirp,
-        # areverse ile son tarafta da ayni islemi tekrarla
+        # Referans temizleme zinciri (yumusatildi — eski -25/-40 kombinasyonu
+        # cikti sesinde hisirti + cizirti birakiyordu):
+        #   1. highpass=80    -> 80Hz alti gumburtu/rüzgar/HVAC at
+        #   2. lowpass=8000   -> 8kHz ustu hisirti at (konusma 8kHz'e kadar)
+        #   3. afftdn=nf=-20:nt=w (eski -25, agresif idi)
+        #      -> Spektral noise reduction. -25 kelime kenarlarinda metalik
+        #         cizirti birakiyor (XTTS bunu klonlayip robotik ses uretiyor).
+        #      -> nt=w "white noise" tipi profil — Whisper transkriptli
+        #         konusma kayitlarinda en yaygin. Daha az artifakt.
+        #   4. silenceremove threshold=-50dB (eski -40dB, asiri hassas)
+        #      -> -40 hafif arka plan muzigi altindaki konusmayi sessizlik
+        #         sayip kirpiyordu -> XTTS yarim fragman ogreniyor -> hisirti.
+        #      -> -50 sadece gercek sessizlik kirpilir, konusma korunur.
+        # Sirasi onemli: once gurultu temizle, sonra sessizlik tespiti
+        # daha dogru calisir (gercek sessizlik gurultu kalkinca ortaya cikar).
+        # XTTS referansta ne duyarsa onu uretilen sese aktarir; bu yuzden
+        # bu adim sentez kalitesi icin kritik.
         silence_filter = (
-            "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-40dB,"
+            "highpass=f=80,"
+            "lowpass=f=8000,"
+            "afftdn=nf=-20:nt=w,"
+            "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-50dB,"
             "areverse,"
-            "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-40dB,"
+            "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-50dB,"
             "areverse"
         )
 
@@ -615,13 +732,20 @@ class DubbingPipeline:
             clipping_ratio = float((np.abs(x) > 0.99).mean())
 
             # Cok kisik ya da cok bos: ele
-            if mean_rms < 0.015 or silence_ratio > 0.5:
+            if mean_rms < 0.02 or silence_ratio > 0.4:
                 return 0.0
             # Asiri clipping: distorted, ele
             if clipping_ratio > 0.02:
                 return 0.0
 
-            consistency = 1.0 / (1.0 + std_rms / (mean_rms + 1e-6))
+            # **Kritik**: muzikli konusmada std_rms/mean_rms oranı yuksek (muzik
+            # cresc/dim yaparken enerji surekli degisir). Saf konusmada bu oran
+            # 0.5-1.0 civarindadir; >1.2 ise muzik/gurultu var demek -> ele.
+            energy_variance_ratio = std_rms / (mean_rms + 1e-6)
+            if energy_variance_ratio > 1.2:
+                return 0.0
+
+            consistency = 1.0 / (1.0 + energy_variance_ratio)
             score = mean_rms * consistency * (1.0 - silence_ratio) * (1.0 - clipping_ratio)
             return float(score)
         except Exception:
@@ -654,8 +778,12 @@ class DubbingPipeline:
         # Cok bosluk
         s = re.sub(r"\s+", " ", s).strip()
         # Cok kisa veya sadece noktalama: segment atla
+        # NOT: 4 -> 2 dusuruldu. Onceden "Yes.", "OK!", "Why?", "No." gibi tek
+        # kelimelik gecerli cumleler (alnum 2-3 karakter) atlaniyordu — kullanici
+        # "bazi cumleleri atliyor" diye sikayet etti. 2 esigi: "Hi", "OK" gecsin.
+        # Tamamen noktalama olan (".", "...") yine atlanir.
         alnum = re.sub(r"[^A-Za-z0-9\u00C0-\u017F]", "", s)
-        if len(alnum) < 4:
+        if len(alnum) < 2:
             return ""
         return s
 
@@ -686,45 +814,161 @@ class DubbingPipeline:
         )
         return gpt_latent, spk_emb
 
-    def _synthesize_segment(self, text: str, gpt_latent, spk_emb,
-                            out_path: str):
-        """Tek segment icin XTTS inference, WAV dosyasina yazar.
+    @staticmethod
+    def _split_into_sentences(text: str) -> list:
+        """Metni cumle sinirlarinda boler (.!? sonrasi bosluk).
 
-        Konservatif/stabil parametreler — dublaj kalitesi icin secildi.
-        XTTS-v2 default'lari: temperature=0.75, length_penalty=1.0,
-        repetition_penalty=10.0, top_k=50, top_p=0.85, speed=1.0.
+        Konsolide segmentler 6-14sn'lik bloklar; bu surede genelde 1-3 cumle
+        bulunur. XTTS-v2 multi-sentence text'te bilinen bir problem yasiyor:
+        tek autoregressive pass'te modelin GPT'si bazen erken <eos> uretip
+        sondaki cumleleri atliyor. Bu yuzden cumleleri bagimsiz sentezleyip
+        sonra concat etmek dublajdaki "atlama" sorununu cozer.
 
-          - temperature=0.50 (↓0.75): daha tutarli prosody, daha az 'dogaclama'.
-            Belgesel anlatim icin idealdir; tek konusmaci tonunu sabitler.
-          - repetition_penalty=10.0 (default): XTTS halusinasyon egilimine karsi
-            agresif. Default'u koruyoruz — kelime tekrari/takilmayi onler.
-          - length_penalty=1.0 (default): konusma suresine notr.
-          - top_k=50, top_p=0.85 (default): asiri sampling yok.
-          - speed=1.0: hiz timeline assembly'de atempo ile ayarlanir.
-          - enable_text_splitting=True: KRITIK. _consolidate_segments 6-14sn
-            mantiksal bloklar uretiyor, icinde 2-3 cumle olabiliyor. False iken
-            XTTS uzun multi-sentence metni tek pass'te isleyip cumlenin
-            ortasinda <eos> uretiyor (multi-sentence dropout) ve robotik
-            tonlama yapiyor. True iken XTTS'in kendi sentence splitter'i her
-            cumleyi ayri prompt olarak isleyip dogal pause ile birlestiriyor —
-            atlama ve robotluk hissi kaybolur.
+        Heuristik:
+          - Sinir: '. ', '! ', '? ' (bosluk olmadan ayirma — "U.S.A." gibi
+            kisaltmalari koru)
+          - Cok kisa kalan parcalar (< 4 alfanumerik) bir oncekine yapistirilir
+            (XTTS hala 1-2 kelimelik fragmanlarda kotu prosody uretir)
+        """
+        if not text:
+            return []
+        # Cumle sinirinda bolme (".!?" + bosluk + buyuk harf). Ama "Dr. Smith"
+        # gibi kisaltmalar yanlis parcalanmasin diye onceden noktalarini gecici
+        # bir token'la (\x00) maskele, sonra geri ac.
+        ABBREVS = (
+            "Dr", "Mr", "Mrs", "Ms", "Jr", "Sr", "St", "Prof", "Rev",
+            "vs", "etc", "e.g", "i.e", "U.S", "U.K", "U.S.A", "a.m", "p.m",
+        )
+        masked = text.strip()
+        for abbr in ABBREVS:
+            # "Dr. " -> "Dr\x00 " (case-insensitive degil, kasitli — kucuk
+            # harfli "dr." cumle ortasinda nadir, koruma maliyeti yuksek olur)
+            masked = re.sub(
+                rf"\b{re.escape(abbr)}\.",
+                lambda m, a=abbr: a + "\x00",
+                masked,
+            )
+        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\u00C0-\u017F])", masked)
+        # Maskeyi geri ac
+        parts = [p.replace("\x00", ".") for p in parts]
+
+        out = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            alnum_len = len(re.sub(r"[^A-Za-z0-9\u00C0-\u017F]", "", p))
+            if out and alnum_len < 4:
+                # Cok kisa parca: oncekine yapistir
+                out[-1] = out[-1].rstrip() + " " + p
+            else:
+                out.append(p)
+        return out
+
+    def _xtts_infer_to_array(self, text: str, gpt_latent, spk_emb):
+        """XTTS inference yapar, numpy float32 array doner (basarisizsa None).
+
+        Ic detay: 2 deneme + cikti suresi kontrolu. _synthesize_segment hem
+        tek cumle hem de cumle cumle senaryosunda bunu cagrir.
         """
         tts_model = self.synthesizer.xtts_model.synthesizer.tts_model
-        output = tts_model.inference(
-            text=text,
-            language="en",
-            gpt_cond_latent=gpt_latent,
-            speaker_embedding=spk_emb,
-            temperature=0.50,
-            length_penalty=1.0,
-            repetition_penalty=10.0,
-            top_k=50,
-            top_p=0.85,
-            speed=1.0,
-            enable_text_splitting=True,
-        )
-        wav_np = np.array(output["wav"], dtype=np.float32)
-        sf.write(out_path, wav_np, self.XTTS_SR)
+        min_expected_dur = max(0.3, len(text) * 0.04)
+
+        attempts = [
+            {"temperature": 0.65, "repetition_penalty": 5.0},
+            {"temperature": 0.75, "repetition_penalty": 3.0},  # relax retry
+        ]
+
+        for attempt_idx, params in enumerate(attempts):
+            try:
+                output = tts_model.inference(
+                    text=text,
+                    language="en",
+                    gpt_cond_latent=gpt_latent,
+                    speaker_embedding=spk_emb,
+                    temperature=params["temperature"],
+                    length_penalty=1.0,
+                    repetition_penalty=params["repetition_penalty"],
+                    top_k=50,
+                    top_p=0.85,
+                    speed=1.0,
+                    enable_text_splitting=False,
+                )
+                wav_np = np.array(output["wav"], dtype=np.float32)
+                actual_dur = len(wav_np) / self.XTTS_SR
+
+                if actual_dur < min_expected_dur:
+                    print(
+                        f"[DUBBER] XTTS kisa cikti ({actual_dur:.2f}s < beklenen "
+                        f"{min_expected_dur:.2f}s) text=\"{text[:40]}...\" "
+                        f"— deneme {attempt_idx + 1}/{len(attempts)}"
+                    )
+                    if attempt_idx < len(attempts) - 1:
+                        continue
+                    # Son denemede de kisa — yine de don, hicten iyidir
+                return wav_np
+
+            except Exception as e:
+                print(
+                    f"[DUBBER] XTTS inference hatasi (deneme {attempt_idx + 1}): {e} "
+                    f"text=\"{text[:40]}...\""
+                )
+                continue
+        return None
+
+    def _synthesize_segment(self, text: str, gpt_latent, spk_emb,
+                            out_path: str) -> bool:
+        """Bir segmenti XTTS ile sentezler. Multi-sentence ise cumle cumle.
+
+        Strateji:
+          - Tek cumlelik segment: dogrudan inference + yaz
+          - 2+ cumlelik segment: her cumleyi ayri sentezle + 80ms aralarla
+            concat + tek WAV dosyasina yaz.
+
+        Bu yaklasim XTTS'in "uzun multi-sentence text'te 2. cumleyi atlama"
+        bug'ini onler. Latent zaten bir kez hesaplandi; ek cumle inference'i
+        ucuz (~200-400ms/cumle).
+
+        Returns: True basarili, False tamamen basarisiz (cagiran loglar).
+        """
+        sentences = self._split_into_sentences(text)
+        if not sentences:
+            return False
+
+        # Tek cumle: dogrudan
+        if len(sentences) == 1:
+            wav_np = self._xtts_infer_to_array(sentences[0], gpt_latent, spk_emb)
+            if wav_np is None:
+                return False
+            sf.write(out_path, wav_np, self.XTTS_SR)
+            return True
+
+        # Coklu cumle: her birini ayri sentezle, concat
+        chunks = []
+        failed_count = 0
+        for sent in sentences:
+            wav_np = self._xtts_infer_to_array(sent, gpt_latent, spk_emb)
+            if wav_np is None or len(wav_np) == 0:
+                failed_count += 1
+                print(f"[DUBBER] Cumle sentezi basarisiz, atlandi: \"{sent[:50]}...\"")
+                continue
+            chunks.append(wav_np)
+
+        if not chunks:
+            return False
+
+        # Cumleler arasinda 80ms sessizlik — dogal cumle arasi
+        pause = np.zeros(int(self.XTTS_SR * 0.08), dtype=np.float32)
+        parts = []
+        for i, c in enumerate(chunks):
+            if i > 0:
+                parts.append(pause)
+            parts.append(c)
+        full = np.concatenate(parts)
+
+        sf.write(out_path, full, self.XTTS_SR)
+        # En az bir cumle basariliysa True don (kismi sentez de kabul edilir)
+        return True
 
     # ═══════════════════════════════════════════════════════════
     # ADIM 6: TIMELINE ASSEMBLY
@@ -738,23 +982,15 @@ class DubbingPipeline:
           - Kisa kalirsa : sessizlik ile doldurulur (zaten sifir array)
         """
         SR = self.XTTS_SR
-        # Tampon: tasma olursa video_duration'i asabiliriz; sonda mux kirpacak.
-        max_overflow = max(5.0, video_duration * 0.10)
-        total_frames = int((video_duration + max_overflow) * SR)
+        total_frames = int((video_duration + 1.0) * SR)
         output = np.zeros(total_frames, dtype=np.float32)
-
-        # KRITIK: kumulatif son-yazilan-frame takibi. Eski kod 'output[s:e] = data'
-        # atamasi yaptigi icin onceki segmentin kuyrugu sonraki segment yazildiginda
-        # SILINIYORDU — kullaniciya "cumle yarida kesildi" gibi gorunuyor. Cozum:
-        # sonraki segmentin baslangicini en az 'last_end_frame' kadar geri it.
-        last_end_frame = 0
 
         for seg, wav_path in zip(segments, seg_wavs):
             if wav_path is None or not os.path.exists(wav_path):
                 continue
 
             seg_duration = seg["end"] - seg["start"]
-            orig_start_frame = int(seg["start"] * SR)
+            start_frame  = int(seg["start"] * SR)
 
             data, _ = sf.read(wav_path, dtype="float32")
             if data.ndim > 1:
@@ -762,26 +998,25 @@ class DubbingPipeline:
 
             eng_duration = len(data) / SR
 
-            # Ingilizce ses ozgunden >%5 uzunsa hizlandir (atempo).
-            # 1.30 uzeri ratio cizirti/robotluk yapiyor — sikistirmayi atla,
-            # sesi temiz birak; cumle bitisi sonraki segmente kayar (last_end_frame
-            # mekanizmasi sayesinde sonraki segmentin uzerine YAZILMIYOR).
+            # Ingilizce ses ozgunden >%5 uzunsa hizlandir.
+            # KRITIK: atempo 1.15'in uzerinde belirgin metalik artifact + hisirti
+            # birakir (kullanicinin sikayet ettigi "bozuk ses" tam olarak bu).
+            # Eski esik 1.30 cok yuksekti — TR/EN uzunluk farki tipik %20-40
+            # oldugu icin pek cok segment 1.15-1.30 araliginda kalip bozuluyordu.
+            # Yeni davranis:
+            #   - ratio <= 1.15: atempo uygula (temiz)
+            #   - ratio  > 1.15: atempo'yu atla, sesi olduğu gibi birak.
+            #     Sonraki segmente kucuk overlap olusabilir (timeline kayar)
+            #     ama ses kalitesi korunur. Lip-sync kaybi > robotik dublaj.
             if eng_duration > seg_duration * 1.05:
                 ratio = eng_duration / seg_duration
-                if ratio <= 1.30:
+                if ratio <= 1.15:
                     data = self._atempo_stretch(data, SR, ratio, wav_path)
+                # ratio > 1.15: hizlandirmayi atla, sesi temiz birak
 
-            # Kumulatif yerlestirme: ya orijinal zamandan ya da onceki segmentin
-            # bittigi yerden basla (hangisi gec ise).
-            start_frame = max(orig_start_frame, last_end_frame)
             end_frame = min(start_frame + len(data), total_frames)
-            if end_frame <= start_frame:
-                continue
             output[start_frame:end_frame] = data[:end_frame - start_frame]
-            last_end_frame = end_frame
 
-        # Sondaki bos kuyrugu kirp (gercek son kullanilan frame'e kadar).
-        output = output[:max(last_end_frame, int(video_duration * SR))]
         sf.write(out_path, output, SR)
 
     def _atempo_stretch(self, data: np.ndarray, sr: int, ratio: float,
