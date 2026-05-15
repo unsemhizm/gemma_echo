@@ -418,20 +418,31 @@ class DubbingPipeline:
                 vad_filter=False,
                 condition_on_previous_text=True,      # Baglam yardim eder, hatali metin yapismaz
                 temperature=0.0,                      # Deterministic
-                compression_ratio_threshold=2.4,
-                log_prob_threshold=-1.0,
-                # KRITIK: 0.5 cok agresifti — muzikli/gurultulu segmentlerde
-                # konusma 'no_speech' diye etiketlenip yutuluyordu (orn. 1:49-2:17
-                # arasi 30sn'lik blok). Demucs vocals.wav onu cozer ama emniyet
-                # kemeri olarak threshold 0.85'e gevsetiliyor: gercekten konusma
-                # ihtimali %15'ten azsa atla, aksi halde transkribe et.
-                no_speech_threshold=0.85,
+
+                # ── WHISPER BEKCILERI TAMAMEN GEVSETILDI (DEMUCS UYUMU) ─────
+                # Pipeline akisi: Demucs once vokal/instrumental ayriyor, Whisper
+                # sadece TEMIZ vocals.wav uzerinde calisiyor. Halusinasyon kaynagi
+                # olan muzik/gurultu zaten yok. Bu yuzden Whisper'in kendi koruma
+                # filtreleri arti-katki vermiyor, tam tersine bogulan/sulu vokal
+                # bolgelerinde gercek konusmayi siliyor.
+                #
+                # Onceki ayarlar (0.5 default -> 0.85) bazi 30sn'lik konusma
+                # bloklarini hala yutuyordu. Final tasarim:
+                #   - compression_ratio_threshold=None: kendini-tekrar koruma
+                #     kapali (Demucs sonrasi nadir; gercek konusmayi silmesin)
+                #   - log_prob_threshold=None: Whisper bogulan sese %50 emin
+                #     bile olsa metne donsun, atmasin
+                #   - no_speech_threshold=0.95: yalnizca %95 'kesin sessizlik'
+                #     sayilan segmentler atilir
+                compression_ratio_threshold=None,
+                log_prob_threshold=None,
+                no_speech_threshold=0.95,
             )
             result = []
             for seg in segments_iter:
-                # Cift filtre gevsetildi — Whisper'in kendi threshold'una guvenip
-                # cok ekstrem (>0.85) durumlari ele.
-                if seg.no_speech_prob > 0.85:
+                # Manuel post-filter de %95'e cekildi — Whisper'a yetki ver,
+                # sadece kesin gurultu durumunda ele.
+                if seg.no_speech_prob > 0.95:
                     continue
                 text = seg.text.strip()
                 if not text:
