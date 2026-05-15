@@ -27,6 +27,26 @@ def _load_cultural_concepts() -> dict:
 
 CULTURAL_CONCEPTS = _load_cultural_concepts()
 
+
+# ── DUBLAJ ICIN DILE-DUYARLI KARAKTER ORANI ───────────────────────────────────
+# Her dil farkli "bilgi yogunlugu"na sahip — bir saniyede sigan karakter
+# sayisi degisir. Pellegrino et al. (2011) "A cross-language perspective on
+# speech information rate" + endustri dublaj/altyazi ortalamalari bazli:
+#
+#   - Latin alfabe konusulan diller: 13-17 char/sec (kelime ortalamasi 4-6 harf)
+#   - CJK (Cince/Japonca/Korece): 6-9 char/sec (her karakter cok daha yogun bilgi)
+#   - Arapca: kelime kompakt ama harf sayisi Latin'e yakin → 14 char/sec
+#
+# Bu tablo translator.translate() icinde target_duration_sec verildiginde
+# karakter limitini hesaplamak icin kullanilir. Boylece dublaj kelepcesi
+# kelime sayisi yerine SURE-BAZLI calisir, AR/JA/ZH gibi dillerde de dogru.
+CHARS_PER_SEC = {
+    "en": 15, "es": 17, "fr": 16, "de": 13, "it": 17, "pt": 16,
+    "tr": 14, "ru": 14, "pl": 14, "nl": 14, "cs": 14, "hu": 14,
+    "ar": 14, "ja":  8, "zh":  6, "ko":  9, "hi": 13,
+}
+DEFAULT_CHARS_PER_SEC = 14  # bilinmeyen dile guvenli orta deger
+
 # ── Persona Şablonları (Dinamik — {tgt_lang} ile hedef dile göre uyarlanır) ──
 #
 # "default" → Hiçbir persona talimatı eklenmez; saf, tarafsız çeviri yapılır.
@@ -140,6 +160,9 @@ class Translator:
         Persona "default" veya "none" ise (ya da bilinmiyorsa) sadece temel
         çeviri talimatı döner — prompt'a herhangi bir stil eki yapılmaz.
         Bir stil personası seçilmişse ilgili talimat base'e eklenir.
+
+        Eğer `_dubbing_mode` aktifse, çeviri uzunluğu için "hard rule" eklenir
+        (dubaj timeline'ına sığması için özlü/kısa çeviri zorunlu).
         """
         base = (
             f"You are a lightning-fast translator. Translate the following {src_lang} text to {tgt_lang}. "
@@ -147,11 +170,45 @@ class Translator:
             f"CRITICAL: Never translate idioms, proverbs, or cultural expressions word-for-word. "
             f"Always find the natural, culturally equivalent expression a native {tgt_lang} speaker would actually say."
         )
+        # DUBLAJ KELEPCESI: dubber.py set_dubbing_mode(True) yaptiginda ekleniyor.
+        # Belge ceviri akisinda bu flag asla True olmaz — TXT/DOCX/PDF etkilenmez.
+        #
+        # ESKI tasarim: "EN <= TR kelime sayisi" — sadece TR<->EN icin dogruydu.
+        # YENI tasarim: SURE-BAZLI kelepce, dile bagimsiz. Her translate cagrisinda
+        # user message'a "[DUBBING TIMING] ... ≤ N characters" hint'i otomatik
+        # eklenir (bkz. translate() icindeki length_hint hesabi). Bu sayede
+        # AR/JA/ZH dahil her dilde dogru calisir.
+        if getattr(self, "_dubbing_mode", False):
+            base += (
+                f"\n\nDUBBING TIMING CONSTRAINT (HARD RULE):\n"
+                f"- This translation will be spoken aloud over a video timeline.\n"
+                f"- Each user message contains a [DUBBING TIMING] tag with a character"
+                f" limit calibrated to the segment's audio duration in {tgt_lang}.\n"
+                f"- Your {tgt_lang} translation MUST stay within that character limit.\n"
+                f"- Be concise: drop filler words, hedges, redundant phrases.\n"
+                f"- Prefer short, punchy sentences. Shorter is always safer for sync.\n"
+                f"- If forced to choose between literal accuracy and timing, choose timing"
+                f" — keep meaning, drop unnecessary words.\n"
+                f"\nCONTEXT USE (HARD RULE):\n"
+                f"- Any previous translation or rolling summary is CONTEXT ONLY.\n"
+                f"- NEVER repeat, paraphrase, or re-translate previous segments.\n"
+                f"- Translate ONLY the current new {src_lang} text given to you."
+            )
         persona_template = PERSONA_TEMPLATES.get(self.persona, "")
         if persona_template:  # "default" ve "none" boş string → bu dal çalışmaz
             persona_instr = persona_template.format(tgt_lang=tgt_lang)
             return f"{base}\n{persona_instr}"
         return base
+
+    def set_dubbing_mode(self, on: bool):
+        """Dublaj modunu acar/kapatir. Acikken system_prompt'a uzunluk + context
+        hard rule'lari eklenir (bkz. _build_system_prompt). Belge cevirisinde
+        her zaman False kalmali — uzunluk kelepcesi belge kalitesini bozar."""
+        self._dubbing_mode = bool(on)
+        # Mevcut diller bilinmiyor; default Turkish->English ile yeniden insa et.
+        # set_mode/translate icindeki akis kullanim aninda dogru dillerle tekrar
+        # build_system_prompt cagirdigi icin bu cagri sadece flag'i etkinlestirir.
+        self.system_prompt = self._build_system_prompt()
 
 
     # ═══════════════════════════════════════════════════════════
@@ -276,10 +333,16 @@ class Translator:
 
     def translate(self, text_tr: str, context: list = None, src_lang="tr", tgt_lang="en",
                   src_name="Turkish", tgt_name="English", prev_translation: str = "",
-                  rolling_summary: str = "") -> dict:
+                  rolling_summary: str = "", target_duration_sec: float = None) -> dict:
         """
         Gelen metni hedef dile çevirir.
         Aktif moda göre online veya offline motora yönlendirir.
+
+        Args:
+            target_duration_sec: Yalnizca dublaj akisi (set_dubbing_mode=True)
+                tarafindan kullanilir. Verilirse user message'a karakter
+                limiti hint'i eklenir; LLM cevirisini bu limite sigdirir.
+                Hesap: CHARS_PER_SEC[tgt_lang] * duration * 1.05 (margin).
         """
         if context is None:
             context = []
@@ -306,6 +369,24 @@ class Translator:
                     f"CULTURAL CONTEXT: The text contains '{idiom}' which conveys '{intent}'. "
                     f"Translate this expression naturally into {tgt_name} as part of the full sentence.\n\n"
                 )
+
+            # ── DUBLAJ SURE KELEPCESI ─────────────────────────────────
+            # Dile-duyarli karakter limiti hesaplanip user message'a hint olarak
+            # eklenir. CHARS_PER_SEC[lang] tablosu Latin/CJK/Arabik dilleri icin
+            # ayri kalibrelidir; kelime-sayisi yaklasimi JA/ZH'da kirilirken
+            # bu yaklasim her dilde tutarli calisir.
+            if getattr(self, "_dubbing_mode", False) and target_duration_sec:
+                lang_code = (tgt_lang or "en").lower()[:2]
+                rate = CHARS_PER_SEC.get(lang_code, DEFAULT_CHARS_PER_SEC)
+                # %5 margin — XTTS native speed=1.0 ile bu sigar; emergency atempo
+                # zaten 1.5sn drift olursa devreye girer (assemble_audio).
+                max_chars = max(20, int(target_duration_sec * rate * 1.05))
+                length_hint = (
+                    f"[DUBBING TIMING] Segment duration: {target_duration_sec:.1f}s. "
+                    f"Your {tgt_name} translation MUST be \u2264 {max_chars} characters. "
+                    f"Be concise; drop fillers; preserve meaning over literal wording.\n\n"
+                )
+                hint = length_hint + hint
     
             # Sistem promptunu guncelle
             self.system_prompt = self._build_system_prompt(src_name, tgt_name)
