@@ -1,12 +1,12 @@
 """
-Gemma Echo — Ana Hub Penceresi
+Gemma Echo — Main hub window.
 
-Sihirbaz bitince açılan ilk ekran.
-Kullanıcı buradan ne yapmak istediğini seçer:
-  • Canlı Çeviri   — mikrofon + overlay
-  • Metin Çevirisi — yazarak çeviri
-  • Video Çevirisi — video dosyası yükle
-  • Ses Çevirisi   — ses dosyası yükle
+The first screen shown after the setup wizard completes. The user picks the
+desired workflow from here:
+  • Live translation   — microphone + overlay.
+  • Text translation   — type-to-translate.
+  • Video translation  — load a video file.
+  • Audio translation  — load an audio file.
 """
 
 import sys
@@ -41,8 +41,9 @@ WIN_W, WIN_H = 680, 520
 
 class HomeWindow(ctk.CTk):
     """
-    Ana hub penceresi — uygulamanın merkezi.
-    HomeWindow.mainloop() tüm olay döngüsünü sürer.
+    Main hub window — the application's central control surface.
+
+    HomeWindow.mainloop() drives the entire event loop.
     """
 
     def __init__(self, cfg: ConfigManager, app):
@@ -58,7 +59,7 @@ class HomeWindow(ctk.CTk):
 
         self._center()
         self._build()
-        self._poll_backend()  # backend hazır mı izle
+        self._poll_backend()  # Monitor backend readiness.
 
     def _center(self):
         self.update_idletasks()
@@ -71,7 +72,7 @@ class HomeWindow(ctk.CTk):
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build(self):
-        # Başlık
+        # Header.
         hdr = ctk.CTkFrame(self, fg_color=_C["accent"], corner_radius=0, height=60)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -87,7 +88,7 @@ class HomeWindow(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color="#aabbcc"
         ).pack(side="left", padx=4)
 
-        # Sağ üst butonlar
+        # Top-right buttons.
         btns = ctk.CTkFrame(hdr, fg_color="transparent")
         btns.pack(side="right", padx=12)
         ctk.CTkButton(
@@ -98,7 +99,7 @@ class HomeWindow(ctk.CTk):
             command=self._open_settings
         ).pack(side="left", padx=4)
 
-        # Alt çubuk (önce pack — tkinter kuralı)
+        # Bottom status bar (packed first — Tk packing order requirement).
         self._status_bar = ctk.CTkFrame(self, fg_color=_C["panel"], corner_radius=0, height=36)
         self._status_bar.pack(fill="x", side="bottom")
         self._status_bar.pack_propagate(False)
@@ -118,7 +119,7 @@ class HomeWindow(ctk.CTk):
         )
         self._backend_lbl.pack(side="right", padx=12)
 
-        # Soru etiketi
+        # Prompt label.
         body = ctk.CTkFrame(self, fg_color=_C["bg"])
         body.pack(fill="both", expand=True, padx=32, pady=20)
 
@@ -127,7 +128,7 @@ class HomeWindow(ctk.CTk):
             font=ctk.CTkFont(size=16, weight="bold"), text_color=_C["white"]
         ).pack(anchor="w", pady=(0, 18))
 
-        # 2×2 Mod Kartları
+        # 2×2 mode card grid.
         grid = ctk.CTkFrame(body, fg_color="transparent")
         grid.pack(fill="both", expand=True)
         grid.columnconfigure(0, weight=1)
@@ -149,7 +150,7 @@ class HomeWindow(ctk.CTk):
             if cmd is self._start_live:
                 self._live_btn = btn
 
-    # ── Mod Eylemleri ─────────────────────────────────────────────────────────
+    # ── Mode actions ──────────────────────────────────────────────────────────
 
     def _start_live(self):
         if not self.app._backend_ready:
@@ -157,7 +158,7 @@ class HomeWindow(ctk.CTk):
             return
 
         if self.app._recorder is not None:
-            # Zaten çalışıyor — durdur
+            # Already running — stop.
             self.app.stop_live()
             self.app.stop_inbound()
             self.app._ptt_mode = None
@@ -166,7 +167,7 @@ class HomeWindow(ctk.CTk):
             if self.app._overlay:
                 self.app._overlay.withdraw()
         else:
-            # Başlat
+            # Start.
             self.app.start_live()
             self._live_btn.set_active(True)
             if self.app._overlay:
@@ -188,7 +189,7 @@ class HomeWindow(ctk.CTk):
         if hasattr(self.app, '_panel') and self.app._panel:
             self.app._panel.show()
 
-    # ── Backend Takibi ────────────────────────────────────────────────────────
+    # ── Backend polling ───────────────────────────────────────────────────────
 
     def _poll_backend(self):
         if self.app._backend_ready:
@@ -198,7 +199,7 @@ class HomeWindow(ctk.CTk):
         else:
             self.after(1000, self._poll_backend)
 
-    # ── Kapatma ───────────────────────────────────────────────────────────────
+    # ── Close ─────────────────────────────────────────────────────────────────
 
     def _on_close(self):
         self.app.stop_live()
@@ -207,11 +208,11 @@ class HomeWindow(ctk.CTk):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Metin Çeviri Penceresi (basit, bağımsız)
+# Text translation window (small, standalone)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TextModeWindow(ctk.CTkToplevel):
-    """Kullanıcının yazarak çeviri yaptığı mini pencere."""
+    """Lightweight type-to-translate window."""
 
     def __init__(self, master):
         super().__init__(master)
@@ -241,7 +242,7 @@ class TextModeWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=13, weight="bold"), text_color="white"
         ).pack(side="left", padx=16, pady=10)
 
-        # Giriş
+        # Input.
         ctk.CTkLabel(self, text=t("source_text"), font=ctk.CTkFont(size=11),
                      text_color=_C["gray"]).pack(anchor="w", padx=16, pady=(12, 2))
         self._in = ctk.CTkTextbox(self, height=90, font=ctk.CTkFont(size=12),
@@ -259,7 +260,7 @@ class TextModeWindow(ctk.CTkToplevel):
             fg_color=_C["panel"], command=self._clear
         ).pack(side="left", padx=8)
 
-        # Çıktı
+        # Output.
         ctk.CTkLabel(self, text=t("target_text"), font=ctk.CTkFont(size=11),
                      text_color=_C["blue"]).pack(anchor="w", padx=16, pady=(0, 2))
         self._out = ctk.CTkTextbox(self, height=90, font=ctk.CTkFont(size=12, weight="bold"),
@@ -303,7 +304,7 @@ class TextModeWindow(ctk.CTkToplevel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Mod Kartı Widget
+# Mode card widget
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _ModeCard(ctk.CTkFrame):
@@ -331,7 +332,7 @@ class _ModeCard(ctk.CTkFrame):
             wraplength=240
         ).pack(pady=(2, 16))
 
-        # Tıklama bağlamaları
+        # Bind click events.
         for w in (self, *self.winfo_children()):
             w.bind("<Button-1>", self._on_click)
             w.bind("<Enter>",    self._on_enter)

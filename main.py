@@ -3,62 +3,65 @@ import os
 import argparse
 import threading
 
-# ─── ADIM 0: Loglama sistemini her şeyden önce başlat ─────────────────────────
-# Diğer modüller import edilmeden önce çalışmalı — aksi halde onların
-# ürettiği hatalar yakalanmadan geçer.
+# ─── STAGE 0: Initialize the logging subsystem before anything else ───────────
+# Must run prior to importing any other module so that failures surfaced during
+# their import are captured by the global exception hooks installed below.
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from core.logger import setup_logging, get_logger
 
-setup_logging()                        # Rotasyonlu dosya + renkli terminal
+setup_logging()                        # Rotating file handler + colored console
 log = get_logger("gemma_echo.main")
 
 
-# ─── GLOBAL HATA KANCALARI (Zırh Katmanı) ─────────────────────────────────────
+# ─── GLOBAL EXCEPTION HOOKS (defensive armor layer) ───────────────────────────
 
 def _handle_unhandled_exception(exc_type, exc_value, exc_tb):
     """
-    Ana thread'deki yakalanmayan tüm exception'ları log dosyasına yazar.
-    sys.excepthook olarak atanır — Python VM çökmeden hemen önce çağrılır.
+    Persist every unhandled exception raised on the main thread to the log file.
+    Bound to ``sys.excepthook``; invoked immediately before the Python VM
+    terminates the interpreter.
 
-    KeyboardInterrupt (Ctrl+C) kasıtlı çıkış sinyalidir; loglanmaz,
-    normal Python davranışına bırakılır.
+    ``KeyboardInterrupt`` (Ctrl+C) is treated as a user-initiated shutdown
+    signal: it is delegated back to the default hook so the process exits
+    cleanly without a misleading critical-error entry.
     """
     if issubclass(exc_type, KeyboardInterrupt):
-        # Ctrl+C → normal çıkış, loglamadan geç
+        # Ctrl+C → clean exit; bypass logging.
         sys.__excepthook__(exc_type, exc_value, exc_tb)
         return
 
     log.critical(
-        "━━━ YAKALANMAYAN ANA THREAD HATASI ━━━",
+        "━━━ UNHANDLED EXCEPTION ON MAIN THREAD ━━━",
         exc_info=(exc_type, exc_value, exc_tb)
     )
 
 
 def _handle_thread_exception(args: threading.ExceptHookArgs):
     """
-    Arka plan thread'lerindeki yakalanmayan exception'ları log dosyasına yazar.
-    threading.excepthook olarak atanır.
+    Persist every unhandled exception raised on a background worker thread.
+    Bound to ``threading.excepthook``.
 
-    Gemma Echo'da Whisper/LLM/XTTS thread'leri bu kanca sayesinde
-    sessizce ölmek yerine tam stack trace bırakır.
+    Gemma Echo's STT / LLM / XTTS workers run on dedicated threads; without
+    this hook a failure would die silently. With it installed every crash
+    leaves a full stack trace tied to the originating thread name.
     """
     if args.exc_type is SystemExit:
-        return   # sys.exit() → loglamadan geç
+        return   # sys.exit() → suppress logging.
 
-    thread_name = args.thread.name if args.thread else "<bilinmeyen thread>"
+    thread_name = args.thread.name if args.thread else "<unknown thread>"
     log.critical(
-        f"━━━ YAKALANMAYAN THREAD HATASI  thread='{thread_name}' ━━━",
+        f"━━━ UNHANDLED THREAD EXCEPTION  thread='{thread_name}' ━━━",
         exc_info=(args.exc_type, args.exc_value, args.exc_traceback)
     )
 
 
-# Kancaları sisteme bağla
+# Wire the hooks into the runtime.
 sys.excepthook       = _handle_unhandled_exception
 threading.excepthook = _handle_thread_exception
 
-log.info("Global hata kancaları (sys.excepthook + threading.excepthook) kuruldu.")
+log.info("Global exception hooks (sys.excepthook + threading.excepthook) installed.")
 
-# Modül yolları sys.path'e yukarıda eklendi
+# Module paths were appended to sys.path above.
 
 from stt.transcriber import Transcriber
 from llm.translator import Translator
@@ -68,67 +71,67 @@ from gui.config import ConfigManager
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gemma Echo v8 — 4 Modlu Hibrit Ceviri Sistemi")
+    parser = argparse.ArgumentParser(description="Gemma Echo v8 — Quad-State Hybrid Translation Engine")
     parser.add_argument(
         "--gui", action="store_true",
-        help="Görsel Arayüzü (GUI) Başlat (Varsayılan)"
+        help="Launch the graphical user interface (default behavior)."
     )
     parser.add_argument(
         "--mode", type=str, default="interactive",
         choices=["online", "online_xtts", "interactive", "offline", "offline_gpu", "hybrid_cloud_io", "hybrid_cloud_stt", "online_local_stt"],
-        help="Çalışma modu: online, online_xtts, interactive, offline vb."
+        help="Runtime mode: online, online_xtts, interactive, offline, etc."
     )
     parser.add_argument(
         "--input", type=str, default=None,
-        help="İşlenecek ses dosyası (CLI testi için)"
+        help="Audio file to process (for CLI test runs)."
     )
     parser.add_argument(
         "--live", action="store_true",
-        help="Canlı terminal modu (Mikrofon VAD)"
+        help="Live terminal mode driven by microphone VAD."
     )
     args = parser.parse_args()
 
-    # EĞER bir girdi belirtilmemişse ve canlı mod istenmemişse -> DİREKT GUI BAŞLAT
+    # If no CLI input is supplied and live mode is not requested, fall back to the GUI.
     is_cli = args.live or (args.input is not None)
-    
+
     if not is_cli:
-        log.info("Hiçbir CLI argümanı bulunamadı. Görsel Arayüz (GUI) başlatılıyor...")
+        log.info("No CLI arguments supplied. Launching the graphical user interface...")
         from gui.app import GemmaEchoApp
         app = GemmaEchoApp()
         app.run()
         return
 
-    # --- Aksi takdirde TERMINAL MOTORU ---
+    # --- Otherwise: TERMINAL ENGINE ---
     log.info("═" * 58)
-    log.info("      GEMMA ECHO v8 — QUAD-STATE ORKESTRA SEFİ")
-    log.info(f"      Mod: {args.mode.upper()}" + (" | CANLI MİKROFON" if args.live else ""))
+    log.info("      GEMMA ECHO v8 — QUAD-STATE ORCHESTRATION ENGINE")
+    log.info(f"      Mode: {args.mode.upper()}" + (" | LIVE MICROPHONE" if args.live else ""))
     log.info("═" * 58)
 
-    # 1. Bileşenleri Başlat
-    log.info("Başlatma: [1/3] STT modülü...")
+    # 1. Initialize core components.
+    log.info("Bootstrap: [1/3] STT module...")
     transcriber = Transcriber()
-    log.info("Başlatma: [2/3] LLM modülü...")
+    log.info("Bootstrap: [2/3] LLM module...")
     translator = Translator()
-    log.info("Başlatma: [3/3] TTS modülü...")
+    log.info("Bootstrap: [3/3] TTS module...")
     synthesizer = Synthesizer()
 
-    # 2. Orkestrasyonu Kur
+    # 2. Wire up the orchestrator.
     cfg = ConfigManager()
     orchestrator = Orchestrator(transcriber, translator, synthesizer, initial_mode=args.mode, config=cfg)
 
-    # 3. Isıt
+    # 3. Warm up the active pipeline.
     orchestrator.warm_up()
 
-    # 4. İşlemi Başlat
+    # 4. Dispatch the workload.
     if args.live:
         from stt.recorder import Recorder
         recorder = Recorder(orchestrator, aggressiveness=2, transcriber=transcriber, config=cfg)
         recorder.run()
     else:
-        log.info(f"Hedef dosya: {args.input}")
+        log.info(f"Target file: {args.input}")
         orchestrator.process(args.input)
         log.info("═" * 58)
-        log.info("      İŞLEM TAMAMLANDI")
+        log.info("      JOB COMPLETED")
         log.info("═" * 58)
 
 

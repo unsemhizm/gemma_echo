@@ -24,9 +24,9 @@ def orchestrator_instance():
 def test_online_pipeline_e2e(orchestrator_instance):
     """
     Sistemi uctan uca online modda test eder.
-    audio/Kayıt (3).wav dosyasini kullanarak bastan sona isler.
+    samples/sample_audio_2.wav dosyasini kullanarak bastan sona isler.
     """
-    audio_path = "audio/Kayıt (3).wav"
+    audio_path = "samples/sample_audio_2.wav"
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyasi bulunamadi: {audio_path}")
         
@@ -43,7 +43,7 @@ def test_offline_fallback_e2e(orchestrator_instance):
     Offline/Fallback modunu test eder.
     Sistemi bilerek offline moda cekerek XTTS'in calismasini saglar.
     """
-    audio_path = "audio/Kayıt (3).wav"
+    audio_path = "samples/sample_audio_2.wav"
     if not os.path.exists(audio_path):
         pytest.skip(f"Test dosyasi bulunamadi: {audio_path}")
         

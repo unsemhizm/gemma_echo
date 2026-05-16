@@ -1,10 +1,10 @@
 """
-Gemma Echo — Kurulum Sihirbazi (Setup Wizard)
+Gemma Echo — Setup wizard.
 
-Ilk calistirmada gosterilir. 3 adimda kurulumu tamamlar:
-  Adim 1 — Donanim: Tarama sonuclari + onerilen profil onayi
-  Adim 2 — API      : Groq / Gemini / ElevenLabs anahtar girisi
-  Adim 3 — Ses      : ElevenLabs ses ID secimi + kurulum sonu
+Surfaced on the very first run. Completes the bootstrap in three steps:
+  Step 1 — Hardware: scan results + recommended-profile confirmation.
+  Step 2 — API     : Groq / Gemini / ElevenLabs API key entry.
+  Step 3 — Voice   : ElevenLabs voice selection + setup summary.
 """
 
 import webbrowser
@@ -14,11 +14,11 @@ from gui.config import ConfigManager
 from gui.i18n   import t, get_language, set_language
 from gui.hardware_scan import scan as hw_scan
 
-# ─── Tema ─────────────────────────────────────────────────────────────────────
+# ─── Theme ────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ─── Sabitler ─────────────────────────────────────────────────────────────────
+# ─── Constants ────────────────────────────────────────────────────────────────
 WIN_W, WIN_H = 660, 580
 STEP_COUNT   = 3
 
@@ -43,46 +43,47 @@ _COLORS = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Ana Sihirbaz Penceresi
+# Main wizard window
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SetupWizard(ctk.CTk):
     """
-    Bagimsiz, adim adim kurulum penceresi.
-    on_complete(cfg) geri cagrisi kurulum bittiginde tetiklenir.
+    Standalone, step-by-step setup window.
+
+    The ``on_complete(cfg)`` callback fires once setup finishes.
     """
 
     def __init__(self, cfg: ConfigManager, on_complete=None):
         super().__init__()
         self.cfg         = cfg
         self.on_complete = on_complete
-        self._hw         = hw_scan()          # taze tarama
+        self._hw         = hw_scan()          # Fresh hardware scan.
         self._step       = 0
-        self._pages      = []                 # her adimin Frame'i
+        self._pages      = []                 # One Frame per step.
 
         self.title(f"{t('app_name')} \u2014 {t('setup_title')}")
         self.geometry(f"{WIN_W}x{WIN_H}")
         self.resizable(False, False)
         self.configure(fg_color=_COLORS["bg"])
 
-        # Ekran ortasina yerlestir
+        # Center the window on screen.
         self.update_idletasks()
         x = (self.winfo_screenwidth()  - WIN_W) // 2
         y = (self.winfo_screenheight() - WIN_H) // 2
         self.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
         self._build_shell()
-        self._build_page_0()   # Donanim
-        self._build_page_1()   # API Anahtarlari
-        self._build_page_2()   # Ses + Bitis
+        self._build_page_0()   # Hardware.
+        self._build_page_1()   # API keys.
+        self._build_page_2()   # Voice + finish.
         self._show_step(0)
 
-    # ── Iskelet ──────────────────────────────────────────────────────────────
+    # ── Shell ────────────────────────────────────────────────────────────────
 
     def _build_shell(self):
-        """Ust baslik, adim gostergesi, icerik alani, alt navigasyon."""
+        """Top header, step indicator, content area and bottom navigation."""
 
-        # ── Baslik ──────────────────────────────────────
+        # ── Header ───────────────────────────────────────
         hdr = ctk.CTkFrame(self, fg_color=_COLORS["accent"], corner_radius=0, height=64)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -99,7 +100,7 @@ class SetupWizard(ctk.CTk):
             text_color="#aabbcc"
         ).pack(side="left", padx=0, pady=20)
 
-        # Dil Secici Segmented Button
+        # Language switcher segmented button.
         self._lang_seg = ctk.CTkSegmentedButton(
             hdr, values=["TR", "EN"],
             width=80, height=28,
@@ -110,11 +111,11 @@ class SetupWizard(ctk.CTk):
         self._lang_seg.set("TR" if get_language() == "tr" else "EN")
         self._lang_seg.pack(side="right", padx=24, pady=18)
 
-        # ── Adim Gostergesi ──────────────────────────────
+        # ── Step indicator ───────────────────────────────
         self._step_bar = _StepBar(self, steps=[t("step_hw"), t("step_api"), t("step_voice")])
         self._step_bar.pack(fill="x", padx=0, pady=(0, 0))
 
-        # ── Alt navigasyon (content'ten ÖNCE pack edilmeli!) ─
+        # ── Bottom navigation (must be packed BEFORE the content frame) ─
         nav = ctk.CTkFrame(self, fg_color=_COLORS["accent"], corner_radius=0, height=60)
         nav.pack(fill="x", side="bottom")
         nav.pack_propagate(False)
@@ -142,11 +143,11 @@ class SetupWizard(ctk.CTk):
         )
         self._btn_skip.pack(side="right", padx=4, pady=12)
 
-        # ── Icerik alani (nav'dan SONRA pack edilmeli!) ───
+        # ── Content area (must be packed AFTER the nav bar) ──
         self._content = ctk.CTkFrame(self, fg_color=_COLORS["bg"], corner_radius=0)
         self._content.pack(fill="both", expand=True, padx=0, pady=0)
 
-    # ── Adim 0: Donanim ──────────────────────────────────────────────────────
+    # ── Step 0: hardware ──────────────────────────────────────────────────────
 
     def _build_page_0(self):
         page = ctk.CTkFrame(self._content, fg_color="transparent")
@@ -162,7 +163,7 @@ class SetupWizard(ctk.CTk):
             font=ctk.CTkFont(size=12), text_color="#aabbcc", wraplength=580
         ).pack(anchor="w", padx=32, pady=(0, 16))
 
-        # Donanim Kart
+        # Hardware card.
         hw_card = ctk.CTkFrame(page, fg_color=_COLORS["card"], corner_radius=12)
         hw_card.pack(fill="x", padx=32, pady=(0, 14))
 
@@ -189,7 +190,7 @@ class SetupWizard(ctk.CTk):
         for label, value, color in rows:
             _hw_row(hw_card, label, value, color)
 
-        # Onerilen Profil Kart
+        # Recommended profile card.
         p = hw["recommended_profile"]
         prof_card = ctk.CTkFrame(page, fg_color="#0d2137", corner_radius=12,
                                  border_width=1, border_color=_COLORS["blue"])
@@ -206,7 +207,7 @@ class SetupWizard(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=570, justify="left"
         ).pack(anchor="w", padx=14, pady=(0, 10))
 
-    # ── Adim 1: API Anahtarlari ───────────────────────────────────────────────
+    # ── Step 1: API keys ──────────────────────────────────────────────────────
 
     def _build_page_1(self):
         page = ctk.CTkFrame(self._content, fg_color="transparent")
@@ -223,7 +224,7 @@ class SetupWizard(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=580, justify="left"
         ).pack(anchor="w", padx=32, pady=(0, 10))
 
-        # Kartlar kayan alanda — yükseklik değişse de kaymayı garanti eder
+        # Cards live inside a scrollable surface so changes in height never break the layout.
         scroll = ctk.CTkScrollableFrame(
             page, fg_color="transparent", corner_radius=0,
             scrollbar_button_color=_COLORS["accent"]
@@ -232,14 +233,14 @@ class SetupWizard(ctk.CTk):
 
         self._api_entries = {}
         services = [
-            ("gemini",     "Gemini (Google AI Studio)", "Ücretsiz kota mevcut"),
-            ("groq",       "Groq",                      "Llama / Gemma için ücretsiz API"),
-            ("elevenlabs", "ElevenLabs",                "TTS — ücretsiz 10k karakter/ay"),
+            ("gemini",     "Gemini (Google AI Studio)", "Free quota available"),
+            ("groq",       "Groq",                      "Cloud Whisper STT accelerator (optional)"),
+            ("elevenlabs", "ElevenLabs",                "TTS — 10k characters/month free"),
         ]
         for key, display, hint in services:
             self._api_entries[key] = _api_row(scroll, display, hint, _API_LINKS[display], self.cfg)
 
-    # ── Adim 2: Ses & Bitis ───────────────────────────────────────────────────
+    # ── Step 2: voice & finish ───────────────────────────────────────────────
 
     def _build_page_2(self):
         page = ctk.CTkFrame(self._content, fg_color="transparent")
@@ -256,7 +257,7 @@ class SetupWizard(ctk.CTk):
             font=ctk.CTkFont(size=11), text_color="#aabbcc", wraplength=580
         ).pack(anchor="w", padx=32, pady=(0, 18))
 
-        # Voice ID satirı
+        # Voice ID row.
         voice_frame = ctk.CTkFrame(page, fg_color=_COLORS["card"], corner_radius=12)
         voice_frame.pack(fill="x", padx=32, pady=(0, 14))
 
@@ -288,7 +289,7 @@ class SetupWizard(ctk.CTk):
 
         voice_frame.columnconfigure(1, weight=1)
 
-        # Ozet kutu
+        # Summary card.
         summary_card = ctk.CTkFrame(page, fg_color=_COLORS["card"], corner_radius=12)
         summary_card.pack(fill="x", padx=32, pady=(0, 14))
 
@@ -304,14 +305,14 @@ class SetupWizard(ctk.CTk):
         )
         self._summary_label.pack(anchor="w", padx=22, pady=(0, 12))
 
-        # Kapat notu
+        # Closing note.
         ctk.CTkLabel(
             page,
             text=t("setup_finish_hint"),
             font=ctk.CTkFont(size=10), text_color="#666", wraplength=580, justify="left"
         ).pack(anchor="w", padx=32, pady=(4, 0))
 
-    # ── Navigasyon ────────────────────────────────────────────────────────────
+    # ── Navigation ────────────────────────────────────────────────────────────
 
     def _change_language(self, val: str):
         lang = val.lower()
@@ -319,19 +320,19 @@ class SetupWizard(ctk.CTk):
         self.cfg.set("language", "ui_language", lang)
         self.cfg.save()
 
-        # Mevcut adimdaki girisleri kaydet ki kaybolmasinlar
+        # Save the entries on the current step so they survive the rebuild.
         self._save_current_step()
 
-        # Tum cocuk bilesenleri yok et ve yeniden olustur
+        # Destroy every child widget and rebuild from scratch.
         for child in self.winfo_children():
             child.destroy()
 
         self.title(f"{t('app_name')} \u2014 {t('setup_title')}")
         self._pages = []
         self._build_shell()
-        self._build_page_0()   # Donanim
-        self._build_page_1()   # API Anahtarlari
-        self._build_page_2()   # Ses + Bitis
+        self._build_page_0()   # Hardware.
+        self._build_page_1()   # API keys.
+        self._build_page_2()   # Voice + finish.
         self._show_step(self._step)
 
     def _show_step(self, step: int):
@@ -341,11 +342,11 @@ class SetupWizard(ctk.CTk):
         self._step_bar.set_step(step)
         self._step = step
 
-        # Son adima girilince ozeti guncelle
+        # Refresh the summary once the user arrives at the final step.
         if step == 2:
             self._refresh_summary()
 
-        # Buton metinleri
+        # Button labels.
         self._btn_back.configure(state="normal" if step > 0 else "disabled")
         if step == STEP_COUNT - 1:
             self._btn_next.configure(text=t("finish_setup"))
@@ -366,23 +367,23 @@ class SetupWizard(ctk.CTk):
             self._show_step(self._step - 1)
 
     def _skip(self):
-        """Mevcut adimi kaydetmeden atla."""
+        """Advance to the next step without persisting the current one."""
         if self._step < STEP_COUNT - 1:
             self._show_step(self._step + 1)
 
-    # ── Kayit / Bitis ─────────────────────────────────────────────────────────
+    # ── Save / finish ─────────────────────────────────────────────────────────
 
     def _save_current_step(self):
-        """Mevcut adimin girislerini config'e kaydet."""
+        """Persist the entries on the current step to config."""
         if self._step == 1:
-            # API anahtarlari
+            # API keys.
             for service, entry in self._api_entries.items():
                 val = entry.get().strip()
                 if val:
                     self.cfg.set_api_key(service, val)
 
         elif self._step == 2:
-            # Voice ID
+            # Voice ID.
             vid = self._voice_entry.get().strip()
             if vid:
                 self.cfg.set_voice(vid)
@@ -397,7 +398,7 @@ class SetupWizard(ctk.CTk):
         self.destroy()
 
     def _refresh_summary(self):
-        """Son adim ozet etiketini guncelle."""
+        """Refresh the summary label on the final step."""
         lines = []
         p = self._hw["recommended_profile"]
         lines.append(f"{t('summary_mode'):<13}: {p['orchestrator_mode'].upper()}")
@@ -412,11 +413,11 @@ class SetupWizard(ctk.CTk):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Yardimci Widget'lar
+# Helper widgets
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _StepBar(ctk.CTkFrame):
-    """Sihirbaz adim gostergesi."""
+    """Wizard step indicator."""
 
     def __init__(self, master, steps: list[str]):
         super().__init__(master, fg_color=_COLORS["accent"], corner_radius=0, height=44)
@@ -457,7 +458,7 @@ class _StepBar(ctk.CTkFrame):
 
 
 def _hw_row(parent, label: str, value: str, color: str):
-    """Donanim bilgi satiri."""
+    """Hardware-info row."""
     row = ctk.CTkFrame(parent, fg_color="transparent")
     row.pack(fill="x", padx=16, pady=3)
     ctk.CTkLabel(
@@ -471,11 +472,11 @@ def _hw_row(parent, label: str, value: str, color: str):
 
 
 def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> ctk.CTkEntry:
-    """Tek bir API servis satiri; Entry widget'i dondurur."""
+    """A single API service row; returns the Entry widget."""
     frame = ctk.CTkFrame(parent, fg_color=_COLORS["card"], corner_radius=10)
     frame.pack(fill="x", padx=32, pady=5)
 
-    # Sol: isim + ipucu
+    # Left: name + hint.
     info = ctk.CTkFrame(frame, fg_color="transparent", width=170)
     info.pack(side="left", padx=14, pady=10)
     info.pack_propagate(False)
@@ -488,7 +489,7 @@ def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> c
         font=ctk.CTkFont(size=9), text_color="#7f8c8d", anchor="w"
     ).pack(anchor="w")
 
-    # Orta: Entry
+    # Middle: Entry.
     service_key = display.split(" ")[0].lower()
     existing    = cfg.get("api_keys", service_key, default="")
     entry = ctk.CTkEntry(frame, width=210, height=32, show="•", font=ctk.CTkFont(size=11),
@@ -497,7 +498,7 @@ def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> c
         entry.insert(0, existing)
     entry.pack(side="left", padx=8, pady=10)
 
-    # Sag: Link butonu
+    # Right: link button.
     ctk.CTkButton(
         frame, text=t("get_key"), width=105, height=32,
         fg_color=_COLORS["blue"], font=ctk.CTkFont(size=11),
@@ -508,7 +509,7 @@ def _api_row(parent, display: str, hint: str, url: str, cfg: ConfigManager) -> c
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Bagimsiz test calistirmasi
+# Standalone test run
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
@@ -522,7 +523,7 @@ if __name__ == "__main__":
     cfg.save()
 
     def on_done(cfg):
-        print("Kurulum tamamlandi!")
+        print("Setup complete!")
         print("  first_run    :", cfg.get("first_run"))
         print("  groq key     :", cfg.get("api_keys", "groq"))
         print("  voice_id     :", cfg.get("elevenlabs_voice_id"))

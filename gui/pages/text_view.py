@@ -1,5 +1,5 @@
 """
-Gemma Echo — Metin Çeviri Ekranı (Text View)
+Gemma Echo — Text translation view.
 """
 
 import os
@@ -26,7 +26,7 @@ class TextView(ctk.CTkFrame):
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
-        # ── Giris ─────────────────────────────────────────────────────
+        # ── Input ─────────────────────────────────────────────────────
         self._in_card = _card(body, "")
         self._in_title_lbl = self._in_card.master.winfo_children()[0]
         self._in = ctk.CTkTextbox(
@@ -37,7 +37,7 @@ class TextView(ctk.CTkFrame):
         )
         self._in.pack(fill="x")
 
-        # Butonlar
+        # Buttons.
         br = ctk.CTkFrame(self._in_card, fg_color="transparent")
         br.pack(fill="x", pady=(10, 0))
 
@@ -71,7 +71,7 @@ class TextView(ctk.CTkFrame):
         )
         self._mic_lbl.pack(side="left", padx=(10, 0))
 
-        # ── Cikis ─────────────────────────────────────────────────────
+        # ── Output ────────────────────────────────────────────────────
         self._out_card = _card(body, "")
         self._out_title_lbl = self._out_card.master.winfo_children()[0]
         self._out = ctk.CTkTextbox(
@@ -83,7 +83,7 @@ class TextView(ctk.CTkFrame):
         )
         self._out.pack(fill="x")
 
-        # Kopyala butonu
+        # Copy button.
         ctk.CTkButton(
             self._out_card, text=t("copy"), height=32, width=90,
             fg_color=_C["surface2"], hover_color=_C["border"],
@@ -93,7 +93,7 @@ class TextView(ctk.CTkFrame):
 
         self._update_language_labels()
 
-    # ── Mikrofon ──────────────────────────────────────────────────────────────
+    # ── Microphone ────────────────────────────────────────────────────────────
 
     def _toggle_mic(self):
         if self._mic_recording:
@@ -127,9 +127,9 @@ class TextView(ctk.CTkFrame):
         with sd.RawInputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16", callback=_cb
         ):
-            self._mic_stop_event.wait()   # Durdur butonuna basilana kadar bekle
+            self._mic_stop_event.wait()   # Block until the stop button is pressed.
 
-        # WAV yaz (RMS normalizasyon)
+        # Write WAV with RMS normalization.
         audio_bytes = b"".join(frames)
         if audio_bytes:
             import numpy as _np
@@ -149,7 +149,7 @@ class TextView(ctk.CTkFrame):
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(audio_bytes)
 
-        # Tanıma aşaması
+        # Recognition phase.
         self.after(0, lambda: self._btn_mic.configure(
             text=f"\U0001f504  {t('recognizing')}",
             fg_color=_C["yellow"],
@@ -196,7 +196,7 @@ class TextView(ctk.CTkFrame):
                 )
             self.after(0, _reset_btn)
 
-    # ── Ceviri ───────────────────────────────────────────────────────────────
+    # ── Translation ──────────────────────────────────────────────────────────
 
     def _translate(self):
         text = self._in.get("0.0", "end").strip()
@@ -235,7 +235,7 @@ class TextView(ctk.CTkFrame):
         from gui.i18n import get_language
         src_name = self.cfg.get("language", "source_name", default="Turkish")
         tgt_name = self.cfg.get("language", "target_name", default="English")
-        
+
         lang_map_tr = {
             "Turkish": "Türkçe",
             "English": "İngilizce",
@@ -246,14 +246,14 @@ class TextView(ctk.CTkFrame):
             "Arabic": "Arapça",
             "Japanese": "Japonca"
         }
-        
+
         ui_lang = get_language()
         src_disp = lang_map_tr.get(src_name, src_name) if ui_lang == "tr" else src_name
         tgt_disp = lang_map_tr.get(tgt_name, tgt_name) if ui_lang == "tr" else tgt_name
-        
+
         in_label_text = t("source_text_label", src_disp.upper())
         out_label_text = t("target_text_label", tgt_disp.upper())
-        
+
         self._in_title_lbl.configure(text=in_label_text)
         self._out_title_lbl.configure(text=out_label_text)
 
@@ -274,6 +274,6 @@ class TextView(ctk.CTkFrame):
             self.clipboard_append(text)
 
     def on_leave(self):
-        """Kullanıcı farklı bir sayfaya geçtiğinde çalışan işlemi durdur."""
+        """Stop in-flight work when the user navigates away from this page."""
         if self._mic_recording and self._mic_stop_event:
             self._mic_stop_event.set()

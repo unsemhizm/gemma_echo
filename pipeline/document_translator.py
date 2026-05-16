@@ -1,19 +1,19 @@
 """
-Gemma Echo — Uzun Belge Ceviri Pipeline'i (Sliding Window)
+Gemma Echo — Long-document translation pipeline (sliding window).
 
-Desteklenen formatlar: TXT, PDF, DOCX
-Algoritma: Overlap'li Kayan Pencere + Term Glossary
+Supported formats: TXT, PDF, DOCX.
+Algorithm: overlapping sliding window + term glossary.
 
-Kullanim:
+Usage:
     dt = DocumentTranslator(translator, chunk_words=800, overlap_paragraphs=3)
-    dt.translate_file("kitap.pdf", src_lang="Turkish", tgt_lang="English",
-                      output_path="kitap_en.txt", progress_cb=None)
+    dt.translate_file("book.pdf", src_lang="Turkish", tgt_lang="English",
+                      output_path="book_en.txt", progress_cb=None)
 
-Layout korumali kullanim:
+Layout-preserving usage:
     dt.translate_file_layout("form.docx", layout_output_path="form_en.docx",
                               src_lang="Turkish", tgt_lang="English")
-    # DOCX -> DOCX: run-level in-place ceviri, font/tablo/baslik korunur
-    # PDF  -> DOCX: font-size bazli baslik tespiti + Heading stilleri
+    # DOCX -> DOCX: run-level in-place translation; fonts / tables / headings preserved.
+    # PDF  -> DOCX: font-size-based heading detection + Heading styles.
 """
 
 import os
@@ -22,14 +22,15 @@ import tempfile
 from dataclasses import dataclass, field
 
 # ===========================================================
-# Sabitler — PDF sütun analizi eşikleri (D1: sihirli sayılar tek yerde)
+# Constants — PDF column-analysis thresholds (D1: magic numbers in one place).
 # ===========================================================
 _TWO_COLUMN_GUTTER_LEFT_RATIO  = 0.44
 _TWO_COLUMN_GUTTER_RIGHT_RATIO = 0.56
-_TWO_COLUMN_OVERLAP_TOLERANCE  = 0.04   # gutter'a taşan kelime oranı max
-_TWO_COLUMN_MIN_WORDS_PER_SIDE = 15     # her iki sütunda min. kelime
+_TWO_COLUMN_OVERLAP_TOLERANCE  = 0.04   # Max fraction of words allowed to cross the gutter.
+_TWO_COLUMN_MIN_WORDS_PER_SIDE = 15     # Minimum word count required on each side.
 
-# Türkçe "nokta" ile biten ama cümle sonu olmayan kısaltmalar (D3 false-positive azaltıcı)
+# Turkish abbreviations that end with a period but do NOT mark a sentence boundary
+# (D3 — reduces false-positive sentence splits).
 _TR_ABBREVS = {
     "md.", "bkz.", "sn.", "prof.", "doç.", "dr.", "av.", "vs.", "vb.",
     "örn.", "yay.", "bas.", "çev.", "haz.", "ed.", "a.g.e.", "i.ö.", "i.s.",
@@ -37,7 +38,7 @@ _TR_ABBREVS = {
     "mr.", "mrs.", "ms.", "jr.", "sr.", "e.g.", "i.e.", "etc.", "st.", "no.",
 }
 
-# Glossary'de özel isim adayı toplarken filtrelenmesi gereken sık cümle başı sözcükleri (D6)
+# Sentence-initial connectives filtered from glossary candidate harvesting (D6).
 _GLOSSARY_STOPWORDS = {
     "Bu", "Şu", "O", "Bunlar", "Şunlar", "Onlar",
     "Şimdi", "Sonra", "Önce", "Bugün", "Dün", "Yarın",
@@ -47,46 +48,46 @@ _GLOSSARY_STOPWORDS = {
     "However", "Therefore", "Moreover", "Although", "Because",
 }
 
-# PDF basligi tespit esikleri (font_size oran tabanli — sayfa basina rolatif).
-# Body size = doc'un ana metin font'u (mode of sizes). Heading'ler bunun ustunde olur.
-_PDF_H1_RATIO = 1.40   # body * 1.40+ -> H1 (ornek: body 11pt, h1 15pt+)
-_PDF_H2_RATIO = 1.18   # body * 1.18+ -> H2 (ornek: body 11pt, h2 13-14pt)
-# H3'u ayri yapmiyoruz — bold + h2-arasi orta gri bolge LLM cevirisinde kayboluyordu;
-# pratikte h1/h2/body 3'lu yeterli.
+# PDF heading-detection thresholds (font-size ratio relative to body size).
+# body_size = mode of font sizes seen across the document. Headings sit above it.
+_PDF_H1_RATIO = 1.40   # body * 1.40+ -> H1 (e.g., body 11 pt → H1 ≥ 15 pt).
+_PDF_H2_RATIO = 1.18   # body * 1.18+ -> H2 (e.g., body 11 pt → H2 13-14 pt).
+# H3 is intentionally not separated — the bold mid-grey zone between H2 and body
+# was being lost in LLM translation; an H1/H2/body 3-class scheme is sufficient.
 
-# Bir bloku "baslik" kabul etmek icin maksimum kelime sayisi
-# (cok uzun H1 paragrafi muhtemelen body — yanlis siniflandirmadan korur)
+# Maximum word count for a block to still be classified as a heading
+# (very long "H1" paragraphs are almost certainly body text — protects against misclassification).
 _PDF_HEADING_MAX_WORDS = 20
 
 
 @dataclass
 class Block:
-    """PDF okumasinda yapilandirilmis blok — text + ne tur (heading/body) oldugu.
+    """Structured PDF block — text + classification (heading / body).
 
-    DOCX kaynaklarda kullanilmaz cunku DOCX'te zaten paragraph.style.name var;
-    DOCX dogrudan in-place run-level cevrilir (full layout korumasi).
+    Not used for DOCX sources because DOCX already exposes ``paragraph.style.name``;
+    DOCX is translated in-place at the run level (full layout preservation).
 
-    PDF'te ise font-size'a bakarak heuristik etiketleme yapariz; sonra
-    Word'e yazarken Heading 1/2/Normal stilleri uygulanir.
+    For PDF we infer the label heuristically from font sizes and then apply
+    Heading 1/2/Normal styles when writing to Word.
     """
     text: str
     kind: str = "body"   # "h1" | "h2" | "body"
 
 
-# Varsayılan progress mesajları (B4: GUI 'messages' parametresiyle override edebilir)
+# Default progress messages (B4: GUI may override via the 'messages' parameter).
 _DEFAULT_MESSAGES = {
-    "reading":        "Dosya okunuyor...",
-    "chunked":        "{paragraphs} paragraf — {total} bolum olusturuldu.",
-    "translating":    "Bolum {i}/{total} cevriliyor...",
-    "summary_update": "Bolum {i}/{total} — Doküman özeti güncelleniyor...",
-    "done":           "Tamamlandi — {total} bolum cevirildi.",
-    "cancelled":      "İptal edildi — {done}/{total} bolum cevirilmişti.",
+    "reading":        "Reading file...",
+    "chunked":        "{paragraphs} paragraphs — {total} chunk(s) prepared.",
+    "translating":    "Translating chunk {i}/{total}...",
+    "summary_update": "Chunk {i}/{total} — Updating document summary...",
+    "done":           "Complete — {total} chunk(s) translated.",
+    "cancelled":      "Cancelled — {done}/{total} chunk(s) translated.",
     "empty_pdf":      (
-        "PDF metin içermiyor (taranmış görüntü / OCR'siz olabilir). "
-        "Bu sürümde OCR desteklenmiyor."
+        "PDF contains no extractable text (likely a scanned image / no OCR). "
+        "OCR is not supported in this release."
     ),
-    "empty_file":     "Dosya bos veya okunamadi.",
-    "unsupported":    "Desteklenmeyen format: .{ext}\nDesteklenenler: TXT, PDF, DOCX",
+    "empty_file":     "File is empty or could not be read.",
+    "unsupported":    "Unsupported format: .{ext}\nSupported: TXT, PDF, DOCX",
 }
 
 
@@ -94,48 +95,48 @@ class DocumentTranslator:
     def __init__(self, translator, chunk_words: int = 800, overlap_paragraphs: int = 3):
         """
         Args:
-            translator:           llm/translator.py Translator nesnesi
-            chunk_words:          Her parcasin yaklasik kelime sayisi.
-                                  API icin 800, local GGUF icin 400 onerilir.
-            overlap_paragraphs:   Bir sonraki chunk'a tasinan onceki paragraf sayisi
-                                  (anlam surekliligi icin).
+            translator:           llm/translator.py Translator instance.
+            chunk_words:          Approximate word budget per chunk.
+                                  Recommended: 800 for the API, 400 for the local GGUF.
+            overlap_paragraphs:   Number of preceding paragraphs carried into the
+                                  next chunk for context continuity.
         """
         self.translator = translator
         self.chunk_words = chunk_words
         self.overlap_paragraphs = overlap_paragraphs
         self._cancel = False
-        # B1/B3: çeviri ilerledikçe toplandığı yer; iptal/exception sonrası partial_result()
-        # ile dışarıdan erişilebilir.
+        # B1/B3: incremental store of translated chunks; partial_result() lets the
+        # caller retrieve everything translated so far after a cancellation / exception.
         self.translated_parts: list[str] = []
-        # GUI tarafının "done/total" gösterimi için (toast, status bar)
+        # Used by the GUI for "done/total" indicators (toasts, status bar).
         self.total_chunks: int = 0
 
-        # ── Layout korumali ceviri (DOCX/PDF -> stilli DOCX) ──
-        # `translate_file_layout` cagrildiginda doldurulur, save_layout_docx ile tuketilir.
-        # DOCX kaynak: gecici dosya yolu (in-place ceviri sonucu)
-        # PDF kaynak: stil etiketli bloklar — kayit aninda Heading/Normal docx'e cevrilir.
+        # ── Layout-preserving translation (DOCX/PDF -> styled DOCX) ──
+        # Populated by `translate_file_layout`, consumed by `save_layout_docx`.
+        # DOCX source: path to the staged file (the in-place translation result).
+        # PDF source: style-tagged Block list — rendered as Heading/Normal DOCX on save.
         self._docx_staging_path: str | None = None
         self._pdf_blocks: list[Block] | None = None
-        self._layout_source_kind: str | None = None   # "docx" | "pdf" | None
+        self._layout_source_kind: str | None = None   # "docx" | "pdf" | None.
 
     def partial_result(self) -> str:
-        """O ana kadar tamamlanmış chunk çevirilerini birleştirip döner.
+        """Return every chunk translated so far, joined back into a single string.
 
-        İptal veya exception durumunda GUI tarafının kullanıcıya kısmi sonuç göstermesi
-        ve 'Kaydet' butonunu etkinleştirmesi için kullanılır.
+        Used by the GUI after a cancellation / exception so the user can still see
+        the partial result and enable the "Save" button.
         """
         return "\n\n".join(self.translated_parts)
 
     # ═══════════════════════════════════════════════════════════
-    # IPTAL
+    # CANCELLATION
     # ═══════════════════════════════════════════════════════════
 
     def cancel(self):
-        """Devam eden ceviriyi iptal eder (thread-safe)."""
+        """Cancel the in-progress translation (thread-safe)."""
         self._cancel = True
 
     # ═══════════════════════════════════════════════════════════
-    # ANA GIRIS NOKTASI
+    # PRIMARY ENTRYPOINT
     # ═══════════════════════════════════════════════════════════
 
     def translate_file(self, file_path: str, src_lang: str = "Turkish",
@@ -143,26 +144,27 @@ class DocumentTranslator:
                        progress_cb=None, user_glossary: dict = None,
                        messages: dict = None) -> str:
         """
-        1. Dosyayi oku (PDF / DOCX / TXT)
-        2. Paragraflara bol (Smart Preprocessing ile birleştirilmiş gerçek paragraflar)
-        3. chunk_words kelimelik bloklara grupla
-        4. Her blok icin dual-aspect, rolling summary ve active glossary baglamlariyla cevir
-        5. Sonuclari birlestir, output_path'e yaz (iptal halinde de partial yazilir)
-        6. Ceviri boyunca term_glossary guncelle
+        1. Read the file (PDF / DOCX / TXT).
+        2. Split into paragraphs (smart preprocessing reconstructs true paragraphs).
+        3. Group paragraphs into chunk_words-sized chunks.
+        4. Translate each chunk with overlap, rolling summary and active glossary context.
+        5. Concatenate the results and write to output_path (partial output on cancellation).
+        6. Continuously update the term_glossary during translation.
 
         Args:
-            file_path:     Kaynak dosya yolu (.txt / .pdf / .docx)
-            src_lang:      Kaynak dil adi (LLM prompt icin, ornek: "Turkish")
-            tgt_lang:      Hedef dil adi (ornek: "English")
-            output_path:   Cikti dosyasi yolu (None = diske yazmaz)
-            progress_cb:   progress_cb(fraction: float, msg: str) — GUI guncelleme
-            user_glossary: Kullanıcının özel terim sözlüğü (örn: {"Yapay Zeka": "AI"})
-            messages:      Lokalize progress mesaj template'leri (B4 — i18n).
-                           None ise _DEFAULT_MESSAGES kullanılır. GUI tarafı t() ile
-                           doldurulmuş bir dict geçebilir.
+            file_path:     Source file (.txt / .pdf / .docx).
+            src_lang:      Source language name passed to the LLM prompt (e.g., "Turkish").
+            tgt_lang:      Target language name (e.g., "English").
+            output_path:   Output file path (None → no disk write).
+            progress_cb:   progress_cb(fraction: float, msg: str) — GUI progress updates.
+            user_glossary: User's custom term dictionary (e.g., {"Yapay Zeka": "AI"}).
+            messages:      Localized progress-message templates (B4 — i18n).
+                           When None, _DEFAULT_MESSAGES is used. The GUI may supply
+                           a t()-resolved dict to localize the strings.
 
         Returns:
-            Cevirilmis metin (str). İptal halinde o ana kadar çevirilen partial sonuç.
+            The translated text as a single string. On cancellation, returns the
+            partial result accumulated up to that point.
         """
         self._cancel = False
         self.translated_parts = []
@@ -188,8 +190,9 @@ class DocumentTranslator:
                 msg["chunked"].format(paragraphs=len(paragraphs), total=total),
             )
 
-        # D5: default_glossary kaynağı TR ise yararı var; diğer dillerde boş başlat.
-        # Kaynağı TR olmayan bir dokümanda "Yapay Zeka -> AI" kuralı prompt'u kirletir.
+        # D5: the default glossary is only useful when the source is Turkish;
+        # leave it empty for other source languages — injecting "Yapay Zeka -> AI"
+        # into a non-Turkish prompt is just noise that degrades the LLM context.
         if (src_lang or "").strip().lower() in ("turkish", "türkçe", "tr"):
             default_glossary = {
                 "Gemma Echo": "Gemma Echo",
@@ -206,7 +209,7 @@ class DocumentTranslator:
         if user_glossary:
             term_glossary.update(user_glossary)
 
-        # B2: default + user terimleri eviction'dan korunur.
+        # B2: default + user-defined terms are protected from eviction.
         protected_terms = set(default_glossary) | set(user_glossary or {})
 
         context_paras = []
@@ -234,17 +237,17 @@ class DocumentTranslator:
             self.translated_parts.append(translated)
             completed = i + 1
 
-            # Dinamik özel isim adaylarını topla; protected terimleri evict etme.
+            # Harvest dynamic proper-noun candidates; protected terms are preserved.
             term_glossary = self._update_glossary(
                 chunk_text, term_glossary, protected_terms=protected_terms
             )
 
-            # Overlap: bir sonraki chunk'a son N paragraf baglamini tasi.
+            # Overlap: pass the last N paragraphs as context into the next chunk.
             context_paras = chunk[-self.overlap_paragraphs:]
             prev_translation = translated
 
-            # D4: Rolling summary ekstra LLM çağrısıdır (her 3 chunk'ta bir).
-            # 31 chunk'lık bir kitap için ~10 ekstra çağrı = ek API maliyeti.
+            # D4: the rolling summary is an extra LLM call (once per 3 chunks).
+            # ~10 extra calls for a 31-chunk book — small but non-zero API cost.
             if (i + 1) % 3 == 0 or i == 0:
                 if progress_cb:
                     progress_cb(
@@ -256,18 +259,18 @@ class DocumentTranslator:
                         translated, rolling_summary
                     )
                 except Exception:
-                    # Özet güncellenemedi — ana çeviri akışı bozulmasın.
+                    # Summary refresh failed — the main translation flow must continue.
                     pass
 
         result = self.partial_result()
 
-        # B1: İptal edilse bile o ana kadarki kısmi sonuç hem disk'e hem caller'a döner.
+        # B1: even on cancellation, the partial result is persisted to disk and returned.
         if output_path and result:
             try:
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(result)
             except Exception:
-                # Disk yazma hatası çeviri sonucunu çöpe atmamalı — caller'a result dön.
+                # A disk-write failure must not discard the translation — return the result to the caller.
                 pass
 
         if progress_cb:
@@ -282,7 +285,7 @@ class DocumentTranslator:
         return result
 
     # ═══════════════════════════════════════════════════════════
-    # LAYOUT KORUMALI CEVIRI (DOCX -> DOCX, PDF -> stilli DOCX)
+    # LAYOUT-PRESERVING TRANSLATION (DOCX -> DOCX, PDF -> styled DOCX)
     # ═══════════════════════════════════════════════════════════
 
     def translate_file_layout(self, file_path: str, src_lang: str = "Turkish",
@@ -290,20 +293,23 @@ class DocumentTranslator:
                               user_glossary: dict = None,
                               messages: dict = None,
                               preview_cb=None) -> str:
-        """Layout korumali ceviri — public entrypoint.
+        """Public entrypoint for layout-preserving translation.
 
-        Akis:
-          - DOCX kaynak  : Source doc'u acar, paragraf+tablo run'larini in-place
-                           cevirir; font/tablo/baslik/margin korunur. Sonuc gecici
-                           bir .docx dosyasina kaydedilir (`_docx_staging_path`).
-          - PDF kaynak   : Font-size ile baslik tespiti yapar, blok listesi
-                           uretir, her bloku cevirir. `_pdf_blocks`'a yazilir.
-          - TXT kaynak   : Layout kavrami yok; klasik translate_file'a duser.
+        Flow:
+          - DOCX source : opens the document and translates paragraph + table
+                          runs in place; fonts, tables, headings and margins are
+                          preserved. The result is saved to a temporary
+                          ``_docx_staging_path``.
+          - PDF source  : performs font-size-based heading detection, produces a
+                          Block list, translates each block. Stored in ``_pdf_blocks``.
+          - TXT source  : layout has no meaning here; falls through to the classic
+                          ``translate_file`` path.
 
-        GUI cevirinin sonunda `save_layout_docx(path)` cagirmali; staged dosya
-        kopyalanir veya bloklardan stilli docx insa edilir.
+        The GUI must call ``save_layout_docx(path)`` at the end of translation;
+        the staged file is then copied (DOCX) or a styled DOCX is rendered from
+        the blocks (PDF).
 
-        Returns: Duz onizleme metni (textbox icin).
+        Returns: plain preview text (for the on-screen text box).
         """
         ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
         self._reset_layout_staging()
@@ -331,18 +337,18 @@ class DocumentTranslator:
             )
 
     def save_layout_docx(self, output_path: str):
-        """Layout korumali ceviri sonucunu .docx olarak yazar.
+        """Persist the layout-preserving translation result as .docx.
 
-        - DOCX kaynak  : staged dosyayi output_path'e kopyala (full layout)
-        - PDF kaynak   : bloklari Heading/Normal stilli yeni docx'e insa et
-        - Diger        : ValueError (caller duz `_save_docx`'e dusmeli)
+        - DOCX source : copy the staged file to ``output_path`` (full layout).
+        - PDF source  : render the Block list into a fresh Heading/Normal-styled DOCX.
+        - Other       : ValueError (caller should fall back to plain `_save_docx`).
 
-        Iptal edilmis cevirinin partial sonucu da yazilabilir; cevrilmemis
-        paragraflar Turkce kalir.
+        Partial results from a cancelled translation can also be persisted;
+        untranslated paragraphs are kept as their source-language text.
         """
         if self._layout_source_kind == "docx" and self._docx_staging_path:
             if not os.path.exists(self._docx_staging_path):
-                raise FileNotFoundError("Staged DOCX bulunamadi.")
+                raise FileNotFoundError("Staged DOCX not found.")
             shutil.copyfile(self._docx_staging_path, output_path)
             return
 
@@ -351,12 +357,12 @@ class DocumentTranslator:
             return
 
         raise ValueError(
-            "Layout korumali cikti yok. translate_file_layout once cagrilmali "
-            "veya kaynak DOCX/PDF degil."
+            "No layout-preserving output available. translate_file_layout must "
+            "be called first, or the source is not DOCX/PDF."
         )
 
     def _reset_layout_staging(self):
-        """Onceki staging dosyalarini temizler (idempotent)."""
+        """Wipe previous staging artifacts (idempotent)."""
         if self._docx_staging_path and os.path.exists(self._docx_staging_path):
             try:
                 os.remove(self._docx_staging_path)
@@ -367,14 +373,15 @@ class DocumentTranslator:
         self._layout_source_kind = None
 
     # ═══════════════════════════════════════════════════════════
-    # AKILLI METİN VE SAYFA DÜZENİ ANALİZİ (Aşama 1)
+    # SMART TEXT AND PAGE-LAYOUT ANALYSIS (Stage 1)
     # ═══════════════════════════════════════════════════════════
 
     def _extract_page_text_layout_aware(self, page) -> str:
-        """pdfplumber sayfasından iki sütunlu düzeni algılayarak dikey akışta metin çeker.
-        Eğer tek sütunluysa varsayılan şekilde metni çeker.
+        """Pull text from a pdfplumber page with two-column awareness.
 
-        D1: Eşikler modul-seviyesi sabitlerden okunuyor (test/tuning kolaylığı).
+        Falls back to the default vertical-flow extraction for single-column pages.
+
+        D1: thresholds are read from module-level constants for easier testing/tuning.
         """
         try:
             width = page.width
@@ -405,8 +412,8 @@ class DocumentTranslator:
             return page.extract_text() or ""
 
     def _reconstruct_paragraphs(self, raw_text: str) -> list:
-        """Satır sonlarındaki gereksiz yeni satır (\\n) karakterlerini akıllıca birleştirir,
-        satır sonu heceleme tirelerini (-) temizler ve gerçek paragraflar inşa eder.
+        """Intelligently merge spurious line breaks, repair hyphenated splits and
+        reconstruct real paragraphs from the raw OCR-style line stream.
         """
         import re
         text = raw_text.replace("\r\n", "\n")
@@ -423,11 +430,11 @@ class DocumentTranslator:
                     current_para = []
                 continue
 
-            # Sayfa numarası veya kısa tekrarlı üstbilgi/altbilgi filtreleme (gürültü engelleme)
+            # Drop page numbers and short headers / footers (noise filter).
             if line.isdigit() or (len(line) < 6 and any(k in line.lower() for k in ["page", "sayfa", "ch.", "bölüm"])):
                 continue
 
-            # Satır sonu tire birleştirme (heceleme)
+            # Stitch hyphenated line breaks.
             has_hyphen = False
             if line.endswith("-") and len(line) > 1:
                 if line[-2].isalpha():
@@ -436,24 +443,24 @@ class DocumentTranslator:
 
             if current_para:
                 prev_line = current_para[-1]
-                # Önceki satır cümle bitirici bir karakterle mi bitti?
+                # Did the previous line end with a sentence-terminating punctuation?
                 ends_sentence = prev_line[-1] in {".", "?", "!", ":"} if prev_line else False
-                # D3: Kısaltma noktası ("Dr.", "Prof.", "Md." vb.) cümle sonu sayılmaz.
+                # D3: a trailing period on an abbreviation ("Dr.", "Prof.", "Md." ...) is NOT a sentence boundary.
                 if ends_sentence and prev_line.endswith("."):
                     last_token = prev_line.rsplit(None, 1)[-1].lower()
                     if last_token in _TR_ABBREVS:
                         ends_sentence = False
-                # Şu anki satır küçük harfle mi başlıyor?
+                # Does the current line start with a lowercase letter?
                 starts_lowercase = line[0].islower() if line else False
 
                 if has_hyphen:
-                    # Tire birleşimi: Boşluk bırakmadan birleştir
+                    # Hyphen junction: concatenate without inserting a space.
                     current_para[-1] = prev_line + line
                 elif not ends_sentence or starts_lowercase:
-                    # Aynı paragrafın devamı: Boşlukla birleştir
+                    # Same paragraph continuation: join with a space.
                     current_para.append(line)
                 else:
-                    # Yeni bir paragraf başlangıcı
+                    # New paragraph boundary.
                     paragraphs.append(" ".join(current_para))
                     current_para = [line]
             else:
@@ -462,7 +469,7 @@ class DocumentTranslator:
         if current_para:
             paragraphs.append(" ".join(current_para))
 
-        # Paragrafları temizle, çoklu boşlukları erit ve çok kısa gürültü satırlarını ele
+        # Clean the paragraphs, collapse repeated whitespace and drop very short noise lines.
         cleaned_paras = []
         for para in paragraphs:
             para = re.sub(r'\s+', ' ', para).strip()
@@ -472,15 +479,15 @@ class DocumentTranslator:
         return cleaned_paras
 
     # ═══════════════════════════════════════════════════════════
-    # DOSYA OKUMA
+    # FILE READING
     # ═══════════════════════════════════════════════════════════
 
     def _read_file(self, path: str, messages: dict = None) -> list:
-        """Dosyayi paragraf listesi olarak doner.
+        """Read the file and return a list of paragraphs.
 
-        - .txt  -> Satır sonu temizliği ve akıllı birleştirme ile paragraflara böl
-        - .pdf  -> pdfplumber ile sütun duyarlı ve akıllı paragraf birleştirmeli okuma
-        - .docx -> python-docx ile paragraflar + tablo hücreleri
+        - .txt  -> Smart line-break cleanup + paragraph reconstruction.
+        - .pdf  -> pdfplumber with column-aware extraction + paragraph reconstruction.
+        - .docx -> python-docx, paragraphs + table cell text.
         """
         msg = dict(_DEFAULT_MESSAGES)
         if messages:
@@ -498,8 +505,8 @@ class DocumentTranslator:
                 import pdfplumber
             except ImportError:
                 raise ImportError(
-                    "PDF okuma icin 'pdfplumber' paketi gereklidir.\n"
-                    "Kurulum: pip install pdfplumber"
+                    "Reading PDFs requires the 'pdfplumber' package.\n"
+                    "Install: pip install pdfplumber"
                 )
             paragraphs = []
             raw_chars = 0
@@ -509,8 +516,8 @@ class DocumentTranslator:
                     raw_chars += len(page_text or "")
                     page_paras = self._reconstruct_paragraphs(page_text)
                     paragraphs.extend(page_paras)
-            # B6: pdfplumber metin çıkaramadıysa büyük olasılıkla taranmış PDF.
-            # "Dosya bos" gibi yanıltıcı mesaj yerine OCR açıklaması ver.
+            # B6: when pdfplumber yields no text it is almost certainly a scanned PDF.
+            # Surface a clear OCR explanation instead of the misleading "empty file" message.
             if not paragraphs and raw_chars < 20:
                 raise ValueError(msg["empty_pdf"])
             return paragraphs
@@ -520,12 +527,12 @@ class DocumentTranslator:
                 from docx import Document
             except ImportError:
                 raise ImportError(
-                    "DOCX okuma icin 'python-docx' paketi gereklidir.\n"
-                    "Kurulum: pip install python-docx"
+                    "Reading DOCX requires the 'python-docx' package.\n"
+                    "Install: pip install python-docx"
                 )
             doc = Document(path)
             paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-            # B8: Tablo hücrelerindeki metin de çeviriye dahil edilsin.
+            # B8: include table-cell text in the translation pass.
             for table in getattr(doc, "tables", []):
                 for row in table.rows:
                     for cell in row.cells:
@@ -538,13 +545,13 @@ class DocumentTranslator:
             raise ValueError(msg["unsupported"].format(ext=ext))
 
     # ═══════════════════════════════════════════════════════════
-    # PARAGRAF GRUPLAMA (Kayan Pencere)
+    # PARAGRAPH GROUPING (sliding window)
     # ═══════════════════════════════════════════════════════════
 
     def _chunk_paragraphs(self, paragraphs: list) -> list:
-        """Paragraflari chunk_words'u gecmeyecek sekilde grupla.
+        """Group paragraphs into chunks not exceeding ``chunk_words``.
 
-        Bir paragrafi ortadan kesmez — tam paragraf sinirinda keser.
+        Paragraph boundaries are respected — never split a paragraph mid-text.
         """
         chunks = []
         current_chunk = []
@@ -567,7 +574,7 @@ class DocumentTranslator:
         return chunks
 
     # ═══════════════════════════════════════════════════════════
-    # CHUNK CEVIRİSİ (Overlap + Glossary)
+    # CHUNK TRANSLATION (overlap + glossary)
     # ═══════════════════════════════════════════════════════════
 
     def _translate_chunk_with_context(self, chunk: list, context_paras: list,
@@ -576,14 +583,16 @@ class DocumentTranslator:
                                       prev_translation: str = "",
                                       rolling_summary: str = "",
                                       chunk_text: str = None) -> str:
-        """Tek chunk'i overlap, prev_translation, rolling_summary ve active glossary baglamlariyla cevirir.
+        """Translate a single chunk with overlap, prev_translation, rolling_summary
+        and active glossary context.
 
-        chunk_text opsiyonel: caller "\\n\\n".join(chunk) zaten yaptıysa tekrar etmemek için (B7).
+        ``chunk_text`` is optional: callers that have already computed
+        ``"\\n\\n".join(chunk)`` can pass it back to avoid duplicate work (B7).
         """
         if chunk_text is None:
             chunk_text = "\n\n".join(chunk)
 
-        # TERM RULES: translate terms exactly as specified (Aşama 3)
+        # TERM RULES: translate the listed terms exactly as specified (Stage 3).
         if term_glossary:
             rules = []
             for k, v in term_glossary.items():
@@ -591,7 +600,7 @@ class DocumentTranslator:
                     rules.append(f"{k} -> {v}")
                 else:
                     rules.append(k)
-            terms_str = ", ".join(rules[:30])  # limit to 30 terms to keep prompt clean
+            terms_str = ", ".join(rules[:30])  # Cap at 30 terms to keep the prompt lean.
             text_to_translate = (
                 f"[STRICT GLOSSARY RULES — translate these terms exactly as specified: "
                 f"{terms_str}]\n\n{chunk_text}"
@@ -599,10 +608,10 @@ class DocumentTranslator:
         else:
             text_to_translate = chunk_text
 
-        # Overlap baglamini ve diger gelismis parametreleri translator'a ilet
+        # Forward overlap context and advanced parameters to the translator.
         result = self.translator.translate(
             text_to_translate,
-            context=context_paras,   # overlap: onceki N paragraf, referans icin
+            context=context_paras,   # Overlap: previous N paragraphs supplied as reference.
             src_lang=src_lang,
             tgt_lang=tgt_lang,
             src_name=src_lang,
@@ -613,20 +622,21 @@ class DocumentTranslator:
         return result.get("translation", chunk_text)
 
     # ═══════════════════════════════════════════════════════════
-    # TERIM SOZLUGU (Term Glossary)
+    # TERM GLOSSARY
     # ═══════════════════════════════════════════════════════════
 
     def _update_glossary(self, chunk_src: str, glossary: dict,
                          protected_terms: set = None) -> dict:
-        """Kaynak metinden ozel isim adaylarini toplar.
+        """Harvest proper-noun candidates from the source chunk.
 
-        protected_terms: 50-entry eviction'ında korunacak terimler (default + user glossary).
+        ``protected_terms`` (default + user-defined glossary) are preserved
+        against the 50-entry eviction budget.
         """
         import re
 
         protected = protected_terms or set()
 
-        # Cumle sonu noktalamalarindan SONRA gelen kelimeler cumle baslangiclari (atla)
+        # Skip tokens following sentence-final punctuation — they are sentence onsets.
         candidates = re.findall(
             r'(?<![.!?]\s)\b([A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİŞÖÜ]{2,}'
             r'(?:\s+[A-ZÇĞİÖŞÜ][a-zA-ZçğışöüÇĞİŞÖÜ]{2,}){0,2})\b',
@@ -637,15 +647,15 @@ class DocumentTranslator:
             term = term.strip().rstrip(".,;:!?()")
             if not term or len(term) <= 2:
                 continue
-            # D6: tek-kelime adayı stopword listesindeyse atla.
+            # D6: drop single-token candidates that are common connectives.
             head = term.split(" ", 1)[0]
             if " " not in term and head in _GLOSSARY_STOPWORDS:
                 continue
             if term not in glossary:
-                glossary[term] = None  # Deger yok — LLM tutarlilik saglar
+                glossary[term] = None  # No value — let the LLM enforce consistency.
 
-        # B2: 50 entry sınırı — protected terimleri her zaman koru, sadece dinamik
-        # toplanan adayları evict et.
+        # B2: 50-entry cap — protected terms are always kept; only dynamically
+        # harvested candidates are evicted.
         if len(glossary) > 50:
             keep_protected = {k: v for k, v in glossary.items() if k in protected}
             dynamic_items  = [(k, v) for k, v in glossary.items() if k not in protected]
@@ -656,7 +666,7 @@ class DocumentTranslator:
         return glossary
 
     # ═══════════════════════════════════════════════════════════
-    # LAYOUT KORUMALI CEVIRI — BATCH TRANSLATION HELPER
+    # LAYOUT-PRESERVING TRANSLATION — BATCH TRANSLATION HELPER
     # ═══════════════════════════════════════════════════════════
 
     def _iter_translated_paragraphs_batched(self, paragraphs: list,
@@ -667,31 +677,33 @@ class DocumentTranslator:
                                             preview_cb=None,
                                             msg: dict = None,
                                             total: int = None):
-        """Paragraflari chunk_words'a gore gruplandirip toplu cevirir.
+        """Group paragraphs by ``chunk_words`` and translate each group in a batch.
 
-        Per-paragraf cevirisi yerine batch — 36 paragraf = 36 API cagrisi yerine
-        ~5 cagri. \\n\\n delimiter ile birlestir, cevir, geri bol. Sayi uyusmazsa
-        problemli batch icin tek tek paragrafa fallback.
+        Batched translation rather than per-paragraph — 36 paragraphs become
+        ~5 API calls instead of 36. Paragraphs in a batch are joined with
+        ``\\n\\n``, translated as one prompt, then split back. If the boundary
+        count does not match, falls back to per-paragraph translation only for
+        the offending batch.
 
-        Yields: (paragraph_idx, translated_text) tuplelari sirayla.
+        Yields: (paragraph_idx, translated_text) tuples in order.
 
-        progress_cb: (frac, message) — her batch basinda + sonunda
-        preview_cb : (full_text_so_far) — her batch sonra textbox'a flush icin
+        progress_cb: (frac, message) — fired at the start and end of each batch.
+        preview_cb : (full_text_so_far) — fired after each batch for textbox flushing.
         """
         if msg is None:
             msg = _DEFAULT_MESSAGES
         if total is None:
             total = len(paragraphs)
 
-        # 1) Cevrilebilir paragraflari batch'lere grupla (chunk_words limiti)
-        # Her batch: [(global_idx, text), ...]
+        # 1) Group translatable paragraphs into batches (chunk_words limit).
+        # Each batch: [(global_idx, text), ...].
         batches = []
         cur_batch = []
         cur_words = 0
         for idx, text in enumerate(paragraphs):
             text = text.strip()
             if not text or text.isdigit() or len(text) <= 2:
-                # Skip — caller orijinali kullanir; batch'e koyma
+                # Skip — caller keeps the original; do not include in the batch.
                 continue
             words = len(text.split())
             if cur_words + words > self.chunk_words and cur_batch:
@@ -724,7 +736,7 @@ class DocumentTranslator:
 
             batch_texts = [t for _idx, t in batch]
             ctx_paras = []
-            # Onceki batch'in son paragraflari context
+            # Context: trailing paragraphs from the previous batch.
             if bi > 0:
                 prev_batch = batches[bi - 1]
                 ctx_paras = [t for _idx, t in prev_batch[-self.overlap_paragraphs:]]
@@ -735,14 +747,14 @@ class DocumentTranslator:
                 prev_translation, rolling_summary,
             )
 
-            # translated_list batch_texts ile ayni uzunlukta garanti (fallback yapildi)
+            # translated_list is guaranteed to match batch_texts in length (fallback enforced).
             for (idx, _src), translated in zip(batch, translated_list):
                 yield (idx, translated)
                 if translated:
                     prev_translation = translated
                 completed += 1
 
-            # Glossary update — batch'in tamamindan
+            # Glossary update — over the whole batch.
             try:
                 joined_src = "\n\n".join(batch_texts)
                 term_glossary = self._update_glossary(
@@ -751,7 +763,7 @@ class DocumentTranslator:
             except Exception:
                 pass
 
-            # Rolling summary — son cevirilen ile
+            # Rolling summary — driven off the most recent translation.
             if translated_list and translated_list[-1]:
                 if progress_cb:
                     progress_cb(
@@ -765,7 +777,7 @@ class DocumentTranslator:
                 except Exception:
                     pass
 
-            # Preview callback — kullaniciya canli ilerleme goster
+            # Preview callback — surface live progress to the user.
             if preview_cb:
                 try:
                     preview_cb(self._snapshot_preview())
@@ -777,18 +789,18 @@ class DocumentTranslator:
                                      src_lang: str, tgt_lang: str,
                                      prev_translation: str,
                                      rolling_summary: str) -> list:
-        """Bir batch'i tek API cagrisinda cevirir, \\n\\n ile boler.
+        """Translate a batch in a single API call and split the result on ``\\n\\n``.
 
-        Boundary tutmazsa (LLM paragraf sayisini koruyamadi) — paragraflari
-        tek tek tekrar cevirir. Bu sekilde bir batch'in toplu basarisizligi
-        diger batch'leri etkilemez.
+        When the boundary count is not preserved (the LLM merged or split
+        paragraphs), retranslate paragraph-by-paragraph. This keeps a batch
+        failure isolated rather than corrupting subsequent batches.
 
-        Returns: batch_texts ile AYNI uzunlukta cevirilmis liste.
+        Returns: list of translations with the SAME length as ``batch_texts``.
         """
         if not batch_texts:
             return []
 
-        # Tek paragraf — split sorunu yok, direkt cevir
+        # Single paragraph — no split concerns, translate directly.
         if len(batch_texts) == 1:
             try:
                 translated = self._translate_chunk_with_context(
@@ -801,7 +813,7 @@ class DocumentTranslator:
             except Exception:
                 return [batch_texts[0]]
 
-        # Coklu paragraf — \n\n ile birlestir, tek API cagrisinda cevir
+        # Multi-paragraph — join with \n\n and translate in one call.
         try:
             joined_translation = self._translate_chunk_with_context(
                 batch_texts, ctx_paras, term_glossary,
@@ -812,16 +824,16 @@ class DocumentTranslator:
         except Exception:
             joined_translation = ""
 
-        # Sonucu boundary'lere bol
+        # Split the result on the boundaries.
         parts = [p.strip() for p in (joined_translation or "").split("\n\n") if p.strip()]
 
-        # Sayi tutuyorsa OK
+        # Boundary count matches — accept.
         if len(parts) == len(batch_texts):
             return parts
 
-        # Sayi tutmuyor — LLM paragraf sayisini koruyamadi.
-        # Fallback: paragraflari tek tek tekrar cevir. Bu pahalidir ama nadir
-        # olur (kisa paragraflarda LLM bazen birlestiriyor/boluyor).
+        # Boundary count differs — the LLM failed to preserve the paragraph count.
+        # Fallback: retranslate one paragraph at a time. Expensive but rare
+        # (the LLM occasionally merges or splits short paragraphs).
         out = []
         local_prev = prev_translation
         for txt in batch_texts:
@@ -840,31 +852,31 @@ class DocumentTranslator:
         return out
 
     def _snapshot_preview(self) -> str:
-        """Mevcut translated_parts listesini onizleme metnine cevirir."""
+        """Render the current ``translated_parts`` list as a preview string."""
         return "\n\n".join(p for p in self.translated_parts if p)
 
     # ═══════════════════════════════════════════════════════════
-    # LAYOUT KORUMALI CEVIRI — DOCX IN-PLACE
+    # LAYOUT-PRESERVING TRANSLATION — DOCX IN-PLACE
     # ═══════════════════════════════════════════════════════════
 
     def _translate_docx_inplace(self, file_path: str, src_lang: str, tgt_lang: str,
                                 progress_cb=None, user_glossary: dict = None,
                                 messages: dict = None, preview_cb=None) -> str:
-        """DOCX'i acar, paragraf+tablo metnini BATCH bazinda cevirir, run-level
-        in-place yazar, gecici dosyaya kaydeder.
+        """Open the DOCX, translate paragraph + table text in BATCHES, write
+        the translations back at the run level, and save to a staging file.
 
-        DIKKAT: `Document.paragraphs` tablo hucrelerindeki paragraflari ICERMEZ;
-        tablolari ayri dolasmak gerekir.
+        IMPORTANT: ``Document.paragraphs`` does NOT include paragraphs nested
+        inside table cells; tables must be traversed separately.
 
-        Performance: Paragraflar chunk_words limitine gore gruplandirilir; her
-        grup tek API cagrisinda cevrilir. 36 paragraf ~= 5 cagri (yerine 36).
+        Performance: paragraphs are grouped by ``chunk_words``; each group is
+        translated in a single API call. 36 paragraphs ≈ 5 calls (not 36).
         """
         try:
             from docx import Document
         except ImportError:
             raise ImportError(
-                "DOCX layout cevirisi icin 'python-docx' gerekli.\n"
-                "Kurulum: pip install python-docx"
+                "DOCX layout translation requires 'python-docx'.\n"
+                "Install: pip install python-docx"
             )
 
         self._cancel = False
@@ -878,7 +890,7 @@ class DocumentTranslator:
 
         doc = Document(file_path)
 
-        # Cevrilecek paragraf objelerini ve metinlerini topla
+        # Collect target paragraph objects + their source text.
         target_paragraphs = []
         for p in doc.paragraphs:
             if p.text.strip():
@@ -895,9 +907,9 @@ class DocumentTranslator:
 
         total = len(target_paragraphs)
         self.total_chunks = total
-        # Pre-allocate translated_parts — out-of-order yazim icin
+        # Pre-allocate translated_parts — supports out-of-order writes.
         self.translated_parts = [p.text.strip() for p in target_paragraphs]
-        paragraph_texts = list(self.translated_parts)  # kaynak metin snapshot
+        paragraph_texts = list(self.translated_parts)  # Source-text snapshot.
 
         if progress_cb:
             progress_cb(
@@ -905,7 +917,7 @@ class DocumentTranslator:
                 msg["chunked"].format(paragraphs=total, total=total),
             )
 
-        # Glossary kurulum
+        # Glossary setup.
         if (src_lang or "").strip().lower() in ("turkish", "türkçe", "tr"):
             default_glossary = {
                 "Gemma Echo": "Gemma Echo",
@@ -922,7 +934,7 @@ class DocumentTranslator:
             term_glossary.update(user_glossary)
         protected_terms = set(default_glossary) | set(user_glossary or {})
 
-        # Staging dosyasi — yarim iptal edilirse de son hali kaydedilebilir.
+        # Staging file — even on a mid-run cancellation the last persisted state can be saved.
         staging_dir = os.path.join(tempfile.gettempdir(), "gemma_echo_layout")
         os.makedirs(staging_dir, exist_ok=True)
         base = os.path.splitext(os.path.basename(file_path))[0]
@@ -933,7 +945,7 @@ class DocumentTranslator:
         completed = 0
         save_counter = 0
 
-        # Batch translate — her batch sonra yields gelir
+        # Batch translate — yields arrive after each batch.
         for idx, translated in self._iter_translated_paragraphs_batched(
             paragraph_texts, src_lang, tgt_lang,
             term_glossary, protected_terms,
@@ -942,13 +954,13 @@ class DocumentTranslator:
         ):
             if not translated:
                 continue
-            # Run-level in-place yazim
+            # Run-level in-place write.
             self._set_paragraph_text_preserve_first_run(target_paragraphs[idx], translated)
             self.translated_parts[idx] = translated
             completed += 1
             save_counter += 1
 
-            # Periodik staging save (her 10 paragrafda bir)
+            # Periodic staging save (every 10 paragraphs).
             if save_counter >= 10:
                 try:
                     doc.save(self._docx_staging_path)
@@ -956,11 +968,11 @@ class DocumentTranslator:
                 except Exception:
                     pass
 
-        # Final save
+        # Final save.
         try:
             doc.save(self._docx_staging_path)
         except Exception as e:
-            raise RuntimeError(f"DOCX kaydedilemedi: {e}")
+            raise RuntimeError(f"Failed to save DOCX: {e}")
 
         if progress_cb:
             if self._cancel:
@@ -975,16 +987,18 @@ class DocumentTranslator:
 
     @staticmethod
     def _set_paragraph_text_preserve_first_run(paragraph, new_text: str):
-        """Paragrafin metnini degistirir, ilk run'in stilini korur.
+        """Replace the paragraph text while preserving the first run's style.
 
-        DOCX'te bir paragrafin N tane run'i olabilir (her run farkli font/bold/
-        italic/color). Ceviri tek metin geri verir; run sinirlarini elden gelse
-        bile koruyamayiz (TR<->EN kelime sayisi/sirasi farkli).
+        In DOCX a paragraph can have N runs (each with its own font / bold /
+        italic / color). Translation returns a single string; we cannot
+        reliably preserve run boundaries because TR<->EN word counts and order
+        differ.
 
-        Pragmatik strateji: ilk run'a tum cevirilen metni yaz, kalan run'larin
-        text'ini bosalt. Boylece paragrafin **en yaygin stili** (ilk run) korunur.
+        Pragmatic strategy: write the entire translation to the first run and
+        empty the text of every subsequent run. This preserves the **dominant
+        style** (first run) of the paragraph.
 
-        Run'siz paragraflar (nadiren) icin yeni run eklenir.
+        For paragraphs without runs (rare), a new run is appended.
         """
         if not paragraph.runs:
             paragraph.add_run(new_text)
@@ -995,26 +1009,27 @@ class DocumentTranslator:
             r.text = ""
 
     # ═══════════════════════════════════════════════════════════
-    # LAYOUT KORUMALI CEVIRI — PDF TO BLOCKS
+    # LAYOUT-PRESERVING TRANSLATION — PDF TO BLOCKS
     # ═══════════════════════════════════════════════════════════
 
     def _translate_pdf_to_blocks(self, file_path: str, src_lang: str, tgt_lang: str,
                                  progress_cb=None, user_glossary: dict = None,
                                  messages: dict = None, preview_cb=None) -> str:
-        """PDF'yi font-size ile baslik tespiti yaparak bloklara boler, BATCH cevirir.
+        """Split the PDF into blocks via font-size heading detection and BATCH-translate them.
 
-        Onceki implementasyon her bloku tek tek (per-paragraf) ceviriyordu —
-        36 blok = 36 API cagrisi. Yeni: chunk_words limitine gore gruplandir,
-        her grup tek API cagrisinda cevrilsin. ~5 cagri / 36 blok.
+        The previous implementation translated each block individually
+        (per-paragraph) — 36 blocks meant 36 API calls. The new approach groups
+        blocks by ``chunk_words`` so a single API call handles many — ~5 calls
+        per 36 blocks.
 
-        Returns: Duz onizleme metni.
+        Returns: plain preview text.
         """
         try:
-            import pdfplumber  # noqa: F401  — sadece import erken hata icin
+            import pdfplumber  # noqa: F401 — early import for fail-fast behavior.
         except ImportError:
             raise ImportError(
-                "PDF okuma icin 'pdfplumber' paketi gereklidir.\n"
-                "Kurulum: pip install pdfplumber"
+                "Reading PDFs requires the 'pdfplumber' package.\n"
+                "Install: pip install pdfplumber"
             )
 
         self._cancel = False
@@ -1026,14 +1041,14 @@ class DocumentTranslator:
         if progress_cb:
             progress_cb(0.0, msg["reading"])
 
-        # 1) Yapi cikar
+        # 1) Extract structure.
         raw_blocks = self._read_pdf_blocks_structured(file_path)
         if not raw_blocks:
             raise ValueError(msg["empty_pdf"])
 
         total = len(raw_blocks)
         self.total_chunks = total
-        # Pre-allocate: translated_parts ve translated_blocks idx'le doldurulacak
+        # Pre-allocate: translated_parts and translated_blocks are filled by index.
         self.translated_parts = [b.text for b in raw_blocks]
         translated_blocks: list = [Block(text=b.text, kind=b.kind) for b in raw_blocks]
         paragraph_texts = [b.text for b in raw_blocks]
@@ -1044,7 +1059,7 @@ class DocumentTranslator:
                 msg["chunked"].format(paragraphs=total, total=total),
             )
 
-        # 2) Glossary kurulum
+        # 2) Glossary setup.
         if (src_lang or "").strip().lower() in ("turkish", "türkçe", "tr"):
             default_glossary = {
                 "Gemma Echo": "Gemma Echo",
@@ -1061,7 +1076,7 @@ class DocumentTranslator:
             term_glossary.update(user_glossary)
         protected_terms = set(default_glossary) | set(user_glossary or {})
 
-        # 3) Batch cevir
+        # 3) Batch translate.
         completed = 0
         for idx, translated in self._iter_translated_paragraphs_batched(
             paragraph_texts, src_lang, tgt_lang,
@@ -1089,20 +1104,21 @@ class DocumentTranslator:
         return self._snapshot_preview()
 
     def _read_pdf_blocks_structured(self, file_path: str) -> list:
-        """PDF'i kelime-bazli okur, satir-paragraf grupla, font-size ile h1/h2/body etiketler.
+        """Read the PDF word-by-word, group into line / paragraph blocks and label
+        them as h1 / h2 / body based on font size.
 
-        Returns: list[Block] - text + kind alanlariyla
+        Returns: list[Block] with text + kind fields.
         """
         import pdfplumber
         from collections import Counter
 
-        # 1) Tum kelimeleri (font_size attr'siyla) topla — sayfa sirasiyla, sutun-duyarli
-        all_pages_lines = []   # [[(text, size), ...], ...] - her sayfa icin liste-satir
-        all_sizes = []         # body_size hesabi icin global
+        # 1) Collect every word (with the size attribute) in page order, column-aware.
+        all_pages_lines = []   # [[(text, size), ...], ...] — one list-per-page of lines.
+        all_sizes = []         # Global pool for body_size estimation.
 
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
-                # extract_words size attribute ile birlikte kelime-bazli okuma
+                # Word-level extraction with size attribute.
                 try:
                     words = page.extract_words(extra_attrs=["size"]) or []
                 except Exception:
@@ -1110,7 +1126,7 @@ class DocumentTranslator:
                 if not words:
                     continue
 
-                # Sutun ayrimi: gerekirse sol-sag ayri ayri grup yap
+                # Column split: group left / right separately when applicable.
                 width = page.width
                 mid_left = width * _TWO_COLUMN_GUTTER_LEFT_RATIO
                 mid_right = width * _TWO_COLUMN_GUTTER_RIGHT_RATIO
@@ -1140,10 +1156,10 @@ class DocumentTranslator:
         if not all_sizes:
             return []
 
-        # 2) Body size = en sik gorulen font boyutu
+        # 2) body_size = mode of the font sizes.
         body_size = Counter(all_sizes).most_common(1)[0][0]
 
-        # 3) Satirlari paragraflara grupla — ayni page icinde, yakin font_size ve dusey mesafe
+        # 3) Group lines into paragraphs within each page based on font-size similarity and vertical proximity.
         blocks: list[Block] = []
         for page_lines in all_pages_lines:
             page_blocks = self._group_lines_into_blocks(page_lines, body_size)
@@ -1153,19 +1169,20 @@ class DocumentTranslator:
 
     @staticmethod
     def _group_words_into_lines(words: list) -> list:
-        """Kelimeleri y-koordinatina gore satirlara grupla.
+        """Group words into lines by Y-coordinate.
 
-        Words pdfplumber.extract_words ciktisi: dict {x0, x1, top, bottom, text, size?}
+        ``words`` is the pdfplumber.extract_words output:
+        dict {x0, x1, top, bottom, text, size?}.
         """
         if not words:
             return []
-        # Y-koordinatina gore sirala (top), sonra ayni satirsa x0
+        # Sort by Y-coordinate (top), then by x0 within a line.
         sorted_words = sorted(words, key=lambda w: (round(w['top'], 1), w['x0']))
 
         lines = []   # [[(text, size), ...], ...]
         current_line = []
         current_top = None
-        Y_TOLERANCE = 3.0   # piksel — ayni satirsa top farki bu kadarin altinda
+        Y_TOLERANCE = 3.0   # In pixels — two words are "on the same line" when their top values differ by less than this.
 
         for w in sorted_words:
             top = w['top']
@@ -1187,7 +1204,7 @@ class DocumentTranslator:
 
     @staticmethod
     def _line_dominant_size(line: list) -> float:
-        """Bir satirdaki en sik gorulen font boyutu (kelime-tabanli)."""
+        """Return the dominant (modal) font size for a line, word-weighted."""
         from collections import Counter
         sizes = [round(sz, 1) for _t, sz in line if sz and sz > 0]
         if not sizes:
@@ -1195,11 +1212,11 @@ class DocumentTranslator:
         return Counter(sizes).most_common(1)[0][0]
 
     def _group_lines_into_blocks(self, lines: list, body_size: float) -> list:
-        """Ardisik satirlari font-size benzerligine gore paragraflara grupla.
+        """Group consecutive lines into paragraph blocks based on font-size similarity.
 
-        Aynı blok icindeki satirlar:
-          - Dominant font size birbirine ~%5 yakin
-          - Bir onceki satirla ayni "kind" (h1/h2/body)
+        Lines belong to the same block when:
+          - Their dominant font size is within ~5% of each other.
+          - They share the same "kind" (h1 / h2 / body) as the previous line.
         """
         if not lines:
             return []
@@ -1213,7 +1230,7 @@ class DocumentTranslator:
             nonlocal cur_words, cur_kind, cur_size
             if cur_words:
                 text = " ".join(cur_words).strip()
-                # Sayfa numarasi/header benzeri cok kisa satirlar — at
+                # Drop very short page-number-like lines.
                 if text and not (len(text) < 4 and text.replace(" ", "").isdigit()):
                     blocks.append(Block(text=text, kind=cur_kind or "body"))
             cur_words = []
@@ -1226,7 +1243,7 @@ class DocumentTranslator:
                 continue
             size = self._line_dominant_size(line)
             kind = self._classify_block_kind(size, body_size)
-            # Heading'lerde cok uzun satirlari yanlis siniflandirmadan koru
+            # Long heading lines are almost certainly body — guard against misclassification.
             if kind != "body" and len(text.split()) > _PDF_HEADING_MAX_WORDS:
                 kind = "body"
 
@@ -1240,10 +1257,10 @@ class DocumentTranslator:
             size_close = (cur_size and size and abs(size - cur_size) / cur_size < 0.05)
 
             if same_kind and size_close and kind == "body":
-                # Body paragrafini birlestir
+                # Merge body paragraph.
                 cur_words.append(text)
             else:
-                # Yeni blok
+                # Close the current block and open a new one.
                 _close()
                 cur_kind = kind
                 cur_size = size
@@ -1253,7 +1270,7 @@ class DocumentTranslator:
         return blocks
 
     def _classify_block_kind(self, font_size: float, body_size: float) -> str:
-        """Font size'a göre blok türünü belirler."""
+        """Classify a block by font size relative to the body size."""
         if not font_size or not body_size:
             return "body"
         if font_size >= body_size * _PDF_H1_RATIO:
@@ -1264,19 +1281,19 @@ class DocumentTranslator:
             return "body"
 
     # ═══════════════════════════════════════════════════════════
-    # LAYOUT KORUMALI CEVIRI — BLOCKS TO DOCX
+    # LAYOUT-PRESERVING TRANSLATION — BLOCKS TO DOCX
     # ═══════════════════════════════════════════════════════════
 
     def _render_blocks_to_docx(self, blocks: list[Block], output_path: str):
-        """Blokları Heading/Normal stilli DOCX'e yazar."""
+        """Render the Block list into a styled DOCX (Heading 1/2 / Normal)."""
         try:
             from docx import Document
             from docx.shared import Inches
         except ImportError:
-            raise ImportError("DOCX yazma icin 'python-docx' paketi gereklidir.")
+            raise ImportError("Writing DOCX requires the 'python-docx' package.")
 
         doc = Document()
-        # Resmi belge ayarları
+        # Document margins.
         sections = doc.sections
         if sections:
             section = sections[0]

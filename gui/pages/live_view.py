@@ -1,5 +1,5 @@
 """
-Gemma Echo — Canlı Çeviri Ekranı (Live Translation View)
+Gemma Echo — Live translation view.
 """
 
 import customtkinter as ctk
@@ -23,10 +23,10 @@ class LiveView(ctk.CTkFrame):
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
-        # ── Kayit Kontrolu ────────────────────────────────────────────
+        # ── Recording controls ────────────────────────────────────────
         inner = _card(scroll, t("rec_control"))
 
-        # Durum satirı
+        # Status row.
         status_row = ctk.CTkFrame(
             inner, fg_color=_C["surface2"],
             corner_radius=10, border_width=1, border_color=_C["border"]
@@ -46,7 +46,7 @@ class LiveView(ctk.CTkFrame):
         )
         self._slbl.pack(side="left", fill="x", expand=True)
 
-        # Butonlar
+        # Buttons.
         btn_row = ctk.CTkFrame(inner, fg_color="transparent")
         btn_row.pack(fill="x", pady=(0, 10))
 
@@ -72,7 +72,7 @@ class LiveView(ctk.CTkFrame):
         )
         self._btn_stop.pack(side="left", fill="x", expand=True)
 
-        # Dual PTT Butonlari
+        # Dual PTT buttons.
         ptt_row = ctk.CTkFrame(inner, fg_color="transparent")
         ptt_row.pack(fill="x", pady=(10, 0))
 
@@ -100,9 +100,9 @@ class LiveView(ctk.CTkFrame):
         )
         self._btn_inbound.pack(side="left")
 
-        # ── Canli Telemetri (Dashboard) ───────────────────────────────
+        # ── Live telemetry (dashboard) ────────────────────────────────
         self._tel_card = _card(scroll, t("telemetry_title"))
-        
+
         def _tel_row(parent, label_key):
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.pack(fill="x", pady=2)
@@ -118,7 +118,7 @@ class LiveView(ctk.CTkFrame):
         self._lbl_tel_tts = _tel_row(self._tel_card, "telemetry_tts")
         self._lbl_tel_e2e = _tel_row(self._tel_card, "telemetry_e2e")
 
-        # ── Altyazi Kontrolu ──────────────────────────────────────────
+        # ── Overlay controls ──────────────────────────────────────────
         ov = _card(scroll, t("overlay_title"))
         ov_row = ctk.CTkFrame(ov, fg_color="transparent")
         ov_row.pack(fill="x")
@@ -138,7 +138,7 @@ class LiveView(ctk.CTkFrame):
             command=self._show_overlay,
         ).pack(side="right")
 
-        # ── Ipuclari ──────────────────────────────────────────────────
+        # ── Tips ──────────────────────────────────────────────────────
         tips = _card(scroll, t("tips"))
         for tip in [
             t("tip1"),
@@ -151,7 +151,7 @@ class LiveView(ctk.CTkFrame):
                 anchor="w", wraplength=580
             ).pack(anchor="w", pady=1)
 
-    # ── Olaylar ───────────────────────────────────────────────────────────────
+    # ── Event handlers ────────────────────────────────────────────────────────
 
     def _start(self):
         if not self.app._backend_ready:
@@ -193,7 +193,7 @@ class LiveView(ctk.CTkFrame):
         self._update_ptt_state(None)
 
     def _update_ptt_state(self, mode):
-        """PTT mod değişince buton görsellerini güncelle (hotkey veya butondan çağrılır)."""
+        """Refresh the PTT button visuals on mode change (invoked from hotkey or click)."""
         if mode == "outbound":
             self._btn_outbound.configure(fg_color=_C["blue_bg"], text_color=_C["blue"])
             self._btn_inbound.configure(fg_color=_C["surface2"], text_color=_C["muted"])
@@ -216,14 +216,14 @@ class LiveView(ctk.CTkFrame):
             self.app._overlay.lift()
 
     def on_leave(self):
-        """Kullanıcı farklı bir sayfaya geçtiğinde mikrofonu durdur."""
+        """Stop the microphone when the user navigates away from this page."""
         if self._recording:
             self._stop()
 
     def update_telemetry(self, data: dict):
-        # Hata durumunda pano stale kalmasın — motor adını "Hata" yaparız, diğerleri "—".
+        # On error keep the dashboard fresh — surface "Error" on the engine slot, "—" elsewhere.
         if data.get("error"):
-            self._lbl_tel_engine.configure(text=t("telemetry_error_engine") if t("telemetry_error_engine") != "telemetry_error_engine" else "Hata", text_color=_C["red"])
+            self._lbl_tel_engine.configure(text=t("telemetry_error_engine") if t("telemetry_error_engine") != "telemetry_error_engine" else "Error", text_color=_C["red"])
             for lbl in (self._lbl_tel_stt, self._lbl_tel_llm, self._lbl_tel_tts, self._lbl_tel_e2e):
                 lbl.configure(text="—", text_color=_C["dim"])
             return
@@ -233,14 +233,14 @@ class LiveView(ctk.CTkFrame):
         llm_ms = data.get("llm_ms", 0)
         tts_ms = data.get("tts_ms", 0)
         e2e_ms = data.get("latency_ms", 0)
-        
+
         eng_color = _C["blue"] if "API" in engine or "online" in engine.lower() else _C["green"]
         if "llama" in engine.lower() or "local" in engine.lower() or "offline" in engine.lower():
             eng_color = _C["green"]
-            
+
         persona = self.cfg.get("persona", default="default")
         persona_str = t(f"persona_{persona}") if persona != "default" and persona != "none" else t("persona_none")
-        
+
         self._lbl_tel_engine.configure(text=engine, text_color=eng_color)
         self._lbl_tel_persona.configure(text=persona_str)
         self._lbl_tel_stt.configure(text=f"{stt_ms} ms" if stt_ms else "—")

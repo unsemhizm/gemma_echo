@@ -1,18 +1,18 @@
 """
-Gemma Echo — Video Dublaj Boru Hatti (Tek Konusmaci)
+Gemma Echo — Video Dubbing Pipeline (single speaker)
 
-Turkce video -> Ingilizce ses, orijinal konusmaci sesi korunur.
+Turkish video -> English audio, preserving the original speaker's voice.
 
-Pipeline siralari:
-  1. ffmpeg      : Video'dan 16kHz mono WAV ayikla
-  2. Whisper     : Zaman damgali transkript (segment start/end/text)
-  3. Gemma 4 Q4  : Her segmenti yerelde Ingilizceye cevir (llama-cpp)
-  4. XTTS-v2     : Referans sesten speaker latent hesapla (bir kez)
-  5. XTTS-v2     : Her segment icin ses klonlama inference
-  6. NumPy/sf    : Segmentleri orijinal zaman eksenine yerlestir
-  7. ffmpeg      : Yeni audio track'i videoyla birlestir
+Pipeline stages:
+  1. ffmpeg      : Extract a 16 kHz mono WAV from the video.
+  2. Whisper     : Produce a timestamped transcript (segment start / end / text).
+  3. Gemma 4 Q4  : Translate each segment locally via the C++ inference engine.
+  4. XTTS-v2     : Compute the speaker latent from the reference audio (once).
+  5. XTTS-v2     : Run voice-cloned inference for each segment.
+  6. NumPy/sf    : Place the synthesized segments back on the original timeline.
+  7. ffmpeg      : Mux the new audio track into the source video.
 
-Cikti: <kaynak_video>_dubbed.mp4
+Output: <source_video>_dubbed.mp4
 """
 
 import os
@@ -25,7 +25,7 @@ import soundfile as sf
 
 class DubbingPipeline:
 
-    XTTS_SR = 24000  # XTTS-v2 cikti ornekleme hizi
+    XTTS_SR = 24000  # XTTS-v2 output sample rate.
 
     def __init__(self, transcriber, translator, synthesizer, config=None):
         self.transcriber = transcriber
@@ -37,37 +37,39 @@ class DubbingPipeline:
         self._tmp_dir = os.path.join(self._project_dir, ".tmp_audio")
         os.makedirs(self._tmp_dir, exist_ok=True)
 
-        # Vokal ayristirici (Demucs CLI wrapper). HER video icin default calisir;
-        # is_available() False donerse graceful fallback (ham ses) ile devam edilir.
-        # Mimari karari: kullaniciya "muzik var mi?" diye sorulMAZ — kurumsal
-        # uretim icin tam otomatik on-isleme.
+        # Vocal separator (Demucs programmatic wrapper). Runs on EVERY video by
+        # default; if is_available() returns False the pipeline gracefully falls
+        # back to the raw audio path.
+        # Design decision: the user is NOT prompted with "does this video have
+        # music?" — the pre-processing is fully automated for production-grade
+        # reliability.
         from pipeline.vocal_separator import VocalSeparator
         self.separator = VocalSeparator()
 
     # ═══════════════════════════════════════════════════════════
-    # ANA PIPELINE
+    # PRIMARY PIPELINE
     # ═══════════════════════════════════════════════════════════
 
-    def process(self, video_path: str, output_path: str, src_lang="tr", tgt_lang="en", 
+    def process(self, video_path: str, output_path: str, src_lang="tr", tgt_lang="en",
                 src_name="Turkish", tgt_name="English", progress_cb=None,
                 transcript_cb=None, translation_cb=None):
         """
-        Tam dublaj pipeline'ini calistirir.
+        Execute the full dubbing pipeline.
 
         Args:
-            video_path:    Kaynak video (mp4, mkv, avi, ...)
-            output_path:   Cikti yolu (<video>_dubbed.mp4)
-            progress_cb:   (fraction, msg, color) -> None  [GUI ilerleme cubugu]
-            transcript_cb: (segments_list) -> None  [Whisper biter bitmez tum
-                           segmentleri verir; her segment dict: start/end/text]
-            translation_cb:(idx, total, english_text) -> None  [her segment
-                           cevrildiginde anlik bilgi]
+            video_path:    Source video (mp4, mkv, avi, ...).
+            output_path:   Output path (typically <video>_dubbed.mp4).
+            progress_cb:   (fraction, msg, color) -> None  [GUI progress bar].
+            transcript_cb: (segments_list) -> None  [invoked once Whisper completes;
+                           each segment is a dict with start / end / text].
+            translation_cb:(idx, total, english_text) -> None  [called after each
+                           segment is translated].
 
         Returns:
-            output_path (basarida)
+            output_path on success.
 
         Raises:
-            RuntimeError: Kritik hata durumunda
+            RuntimeError: on a critical pipeline failure.
         """
 
         def prog(f, msg, color="#5b9ef9"):
@@ -79,8 +81,9 @@ class DubbingPipeline:
         ref_wavs = []
         seg_wavs = []
 
-        # Dublajda kullanıcı ayarları baz alınmalı; sadece varsayılan olarak local offline çalışmamalı.
-        # Mevcut modu kaydet, finally'de geri yükle (kullanıcının online tercihi bozulmasın).
+        # The user's runtime settings drive the dubbing run; we must not force
+        # local-offline. Snapshot the current modes and restore them in the
+        # finally block so the user's online preference is preserved.
         prev_mode = self.translator.mode
         prev_stt_mode = self.transcriber.mode
 
@@ -94,137 +97,140 @@ class DubbingPipeline:
             self.translator.set_mode("online")
             self.translator.unload_local_model()
 
-        # DUBLAJ MODU: system_prompt'a uzunluk + context hard rule'lari ekler.
-        # EN cevirisini TR uzunlugunda tutup snowball/desync birikimini sifirlar.
-        # Belge cevirisinde asla aktiflesmez; finally'de mutlaka kapatilir.
+        # DUBBING MODE: appends the length + context "hard rules" to the system
+        # prompt. Keeps EN translation length close to TR and prevents snowball
+        # desync accumulation. Never activated during document translation;
+        # always disabled in the finally block.
         try:
             self.translator.set_dubbing_mode(True)
         except Exception:
             pass
 
-        # Demucs gecici klasoru — finally'de temizlenir.
+        # Demucs scratch directory — cleaned up in the finally block.
         demucs_work_dir = None
         instrumental_path = None
         try:
-            # ── 1. Ses ayikla (16kHz mono — fallback / Whisper raw) ────
-            prog(0.02, "Video'dan ses ayiklaniyor...", "#f5a623")
+            # ── 1. Extract audio (16 kHz mono — Whisper raw / fallback) ────
+            prog(0.02, "Extracting audio from video...", "#f5a623")
             wav_path = self._extract_wav(video_path)
             video_duration = self._get_wav_duration(wav_path)
-            prog(0.04, f"Video suresi: {video_duration:.1f}s", "#5b9ef9")
+            prog(0.04, f"Video duration: {video_duration:.1f}s", "#5b9ef9")
 
-            # ── 1.5. Vokal/enstrumental ayristirma (Demucs) ────────────
-            # KURUMSAL: Demucs HER videoda otomatik calisir. Muzik yoksa bile
-            # vocals.wav daha temiz olur (gurultu/yanki azalir), instrumental
-            # bos/sessiz ciksa bile mix asamasinda sorun olusmaz.
-            # Kurulu degilse graceful fallback (uyari + ham ses).
+            # ── 1.5. Vocal / instrumental separation (Demucs) ──────────
+            # ENTERPRISE: Demucs runs automatically on every video. Even when
+            # there is no music, vocals.wav is cleaner (noise / reverb reduced)
+            # and an empty instrumental track is harmless during the final mix.
+            # When the dependency is missing we degrade gracefully to raw audio.
             if self.separator.is_available():
-                prog(0.05, "Demucs vokal ayristirma basliyor (~30-60sn)...", "#f5a623")
+                prog(0.05, "Demucs vocal separation starting (~30-60s)...", "#f5a623")
                 demucs_work_dir = os.path.join(self._tmp_dir, "demucs_work")
                 try:
                     vocals_hq, instrumental_hq = self.separator.separate(
-                        video_path,  # Demucs CLI ffmpeg ile video'yu dogrudan kabul eder
+                        video_path,  # Demucs CLI accepts the video directly via ffmpeg.
                         work_dir=demucs_work_dir,
-                        progress_cb=lambda f, m="": prog(0.05 + 0.04 * f, m or "Vokal ayristiriliyor...", "#f5a623"),
+                        progress_cb=lambda f, m="": prog(0.05 + 0.04 * f, m or "Separating vocals...", "#f5a623"),
                     )
-                    # Whisper / _extract_reference 16kHz mono bekliyor → downsample.
+                    # Whisper / _extract_reference expect 16 kHz mono → downsample.
                     clean_wav = os.path.join(self._tmp_dir, "dub_vocals_16k.wav")
                     self._resample_mono(vocals_hq, clean_wav, 16000)
-                    wav_path = clean_wav  # Whisper ve referans bunu kullanacak
+                    wav_path = clean_wav  # Whisper and the reference extractor consume this file.
                     instrumental_path = instrumental_hq
-                    # KRITIK: Demucs bittikten hemen sonra VRAM'i bosalt.
-                    # htdemucs ~3GB VRAM tutuyor; Whisper-medium (~1.5GB) ve
-                    # Gemma 8192ctx (~4GB) icin sirali pay acilmasi gerek.
+                    # CRITICAL: release Demucs VRAM immediately after this stage.
+                    # htdemucs occupies ~3 GB; Whisper-medium (~1.5 GB) and
+                    # Gemma 8192-ctx (~4 GB) need sequential headroom.
                     try:
                         self.separator.unload()
                     except Exception:
                         pass
-                    prog(0.09, "Vokal ayristirma tamam — Whisper/XTTS temiz ses uzerinde.", "#23d05e")
+                    prog(0.09, "Vocal separation complete — Whisper / XTTS will work on the clean audio.", "#23d05e")
                 except Exception as e:
-                    print(f"[DUBBER] Demucs basarisiz, ham ses ile devam: {e}")
-                    prog(0.09, "Demucs basarisiz, ham ses ile devam.", "#f5a623")
+                    print(f"[DUBBER] Demucs failed, continuing with raw audio: {e}")
+                    prog(0.09, "Demucs failed, continuing with raw audio.", "#f5a623")
                     instrumental_path = None
-                    # Hata olsa bile model VRAM'de kaldiysa bosalt
+                    # Free any lingering VRAM even on failure.
                     try:
                         self.separator.unload()
                     except Exception:
                         pass
             else:
-                prog(0.09, "Demucs kurulu degil → ham ses ile devam (kalite dusebilir).", "#f5a623")
+                prog(0.09, "Demucs not installed → continuing with raw audio (quality may degrade).", "#f5a623")
 
-            # ── 2. Whisper transkript ──────────────────────────────────
-            prog(0.10, "Whisper transkript olusturuluyor...", "#5b9ef9")
+            # ── 2. Whisper transcription ───────────────────────────────
+            prog(0.10, "Whisper generating transcript...", "#5b9ef9")
             segments = self._transcribe_segments(wav_path, language=src_lang)
             if not segments:
-                raise RuntimeError(f"Videoda {src_name} konusma taninamadi.")
+                raise RuntimeError(f"No {src_name} speech detected in the video.")
 
-            # XTTS, 1-3 kelimelik veya <1.5s segmentlerde garip prosody uretir.
-            # Bu tip kisa segmentleri bir oncekine birlestirip daha dogal cumleler
-            # olustur. Hem cevirinin baglami iyilesir, hem TTS kalitesi artar.
+            # XTTS-v2 produces awkward prosody on 1-3-word or <1.5 s segments.
+            # Merge those short segments into the preceding one so we feed XTTS
+            # more natural sentence-length utterances. Side benefit: the LLM
+            # also gets longer context to translate.
             raw_count = len(segments)
             segments = self._merge_short_segments(segments)
-            # Proaktif konsolidasyon: 6-14sn'lik bloklara grupla.
-            # LLM cagrisi ~%50 azalir, XTTS daha dogal prosody uretir.
+            # Proactive consolidation: group into 6-14 s logical blocks.
+            # ~50% fewer LLM calls and noticeably more natural XTTS prosody.
             after_short = len(segments)
             segments = self._consolidate_segments(segments)
             final_count = len(segments)
             if final_count < raw_count:
-                prog(0.22, f"{raw_count} segment -> {after_short} (kisa) -> {final_count} (konsolide bloklar).", "#23d05e")
+                prog(0.22, f"{raw_count} segments -> {after_short} (short-merged) -> {final_count} (consolidated blocks).", "#23d05e")
             else:
-                prog(0.22, f"{final_count} segment tanindi.", "#23d05e")
+                prog(0.22, f"{final_count} segments detected.", "#23d05e")
 
-            # GUI: Whisper transkript hazir, kaynak metni hemen kullaniciya goster.
-            # Boylece kullanici cevirinin gelmesini beklemeden tanimanin dogrulugunu
-            # gozden gecirebilir.
+            # GUI: as soon as the transcript is ready, surface the source text
+            # to the user so they can review recognition accuracy without
+            # waiting for the translations to land.
             if transcript_cb:
                 try:
                     transcript_cb([dict(s) for s in segments])
                 except Exception:
-                    pass  # GUI hatasi pipeline'i dursurmasin
+                    pass  # A GUI failure must not halt the pipeline.
 
-            # ── VRAM serbest bırak: Whisper bitti, sırayla LLM ve XTTS gelecek ──
-            # 6GB GPU'da Whisper(~1GB) + Gemma 8192ctx(~4GB) + XTTS(~2GB) = ~7GB sığmaz.
-            # Sadece STT GPU modeli aktifse boşalt; cloud_auto zaten VRAM kullanmaz.
+            # ── Release VRAM: Whisper is done, the LLM and XTTS run next ──
+            # On a 6 GB GPU: Whisper (~1 GB) + Gemma 8192-ctx (~4 GB) + XTTS (~2 GB) = ~7 GB → does not fit.
+            # Evict only when the GPU STT model is active; cloud_auto consumes no VRAM.
             if prev_stt_mode in ("local_gpu", "local_gpu_hq"):
                 try:
                     self.transcriber.set_mode("local_cpu")
-                    prog(0.23, "Whisper VRAM bosaltildi (LLM icin pay aciliyor)...", "#5b9ef9")
+                    prog(0.23, "Whisper evicted from VRAM (making room for the LLM)...", "#5b9ef9")
                 except Exception:
-                    # Bosaltma basarisiz olsa bile dublaj devam etsin.
+                    # Even if eviction fails, the dubbing run must continue.
                     pass
 
-            # ── 3. Yerel Gemma 4 Q4 ile ceviri ────────────────────────
-            # Whisper segmentleri kisa (5-15 kelime). Her biri standalone cevirilirse
-            # zamir/baglam kaybi olur. Direkt media cevirisindeki kalite icin
-            # prev_translation + son N segmentin kaynagi + rolling_summary gecirilir.
-            # Bu nedenle yerel modeli genis ctx ile yukluyoruz (8192).
+            # ── 3. Translate via the local Gemma 4 Q4 engine ──────────
+            # Whisper segments are short (5-15 words). Translating each one in
+            # isolation would lose pronoun / context. To match media-translation
+            # quality we forward prev_translation + the last N source segments +
+            # rolling_summary, so the local model is loaded with a wide context (8192).
             if self.translator.local_llm is None:
-                prog(0.24, "Yerel Gemma 4 yukleniyor (30-60sn)...", "#f5a623")
+                prog(0.24, "Loading the local Gemma 4 engine (30-60s)...", "#f5a623")
                 if not self.translator.load_local_model(8192):
                     raise RuntimeError(
-                        "Yerel Gemma yuklenemedi (VRAM). "
-                        "Ayarlar'dan LLM'i online yapin veya daha dusuk VRAM profili secin."
+                        "Local Gemma failed to load (VRAM). "
+                        "Switch the LLM to online in Settings or pick a smaller VRAM profile."
                     )
             elif getattr(self.translator, "loaded_n_ctx", 512) < 8192:
-                # Zaten yukluyse ama kucuk ctx ile, baglam icin yeniden yukle.
-                prog(0.24, "Yerel Gemma 4 baglam icin yeniden yukleniyor...", "#f5a623")
+                # Already loaded but with a smaller context — reload with the wide window.
+                prog(0.24, "Reloading the local Gemma 4 engine with a wider context...", "#f5a623")
                 self.translator.load_local_model(8192)
 
             translated = []
             total = len(segments)
             prev_translation = ""
             rolling_summary = ""
-            CTX_WINDOW = 3  # son N segmentin kaynak metni baglam olarak gecirilir
+            CTX_WINDOW = 3  # Number of preceding source segments included in the context window.
 
             for i, seg in enumerate(segments):
                 p = 0.24 + 0.28 * (i / total)
-                prog(p, f"Ceviri: {i+1}/{total}  \"{seg['text'][:40]}\"", "#5b9ef9")
+                prog(p, f"Translating: {i+1}/{total}  \"{seg['text'][:40]}\"", "#5b9ef9")
 
-                # Son CTX_WINDOW segmentin Turkce metni — referans baglam
+                # Source text of the last CTX_WINDOW segments — reference context.
                 context_segs = [s["text"] for s in segments[max(0, i - CTX_WINDOW):i]]
 
-                # SURE-BAZLI KELEPCE: dile-duyarli (CHARS_PER_SEC tablosu translator
-                # icinde). Eski "kelime sayisi <= TR" kurali sadece TR<->EN icin
-                # dogru calisirdi; bu yaklasim AR/JA/ZH dahil tum dillerde dogrudur.
+                # DURATION-BASED CONSTRAINT: language-aware (CHARS_PER_SEC table
+                # is owned by the translator). The legacy "word-count <= TR"
+                # rule only worked for TR<->EN; this approach is correct for
+                # AR / JA / ZH as well.
                 seg_duration = max(0.5, seg["end"] - seg["start"])
 
                 result = self.translator.translate(
@@ -242,55 +248,57 @@ class DubbingPipeline:
                 translated.append({**seg, "text_en": text_en})
                 prev_translation = text_en
 
-                # GUI: bu segmentin cevirisi hazir; anlik panele yansisin.
+                # GUI: this segment's translation is ready — surface it live.
                 if translation_cb:
                     try:
                         translation_cb(i, total, text_en)
                     except Exception:
-                        pass  # GUI hatasi pipeline'i dursurmasin
+                        pass  # A GUI failure must not halt the pipeline.
 
-                # Her 5 segmentte bir rolling summary guncelle (kitap ceviri pattern'i).
-                # Segmentler kisa oldugu icin 3 yerine 5 — gereksiz LLM cagrisi azaltir.
+                # Refresh the rolling summary every 5 segments (document-translation
+                # pattern). Cadence is 5 (not 3) because dubbing segments are
+                # short — fewer summary calls keeps LLM load reasonable.
                 if (i + 1) % 5 == 0 or i == 0:
                     try:
                         rolling_summary = self.translator.generate_summary(
                             text_en, rolling_summary
                         )
                     except Exception:
-                        # Ozet basarisiz olsa bile ana ceviri akisi devam etsin.
+                        # The summary refresh failing must not abort translation.
                         pass
 
-            # ── VRAM serbest birak: tum segmentler cevrildi, Gemma'ya artik gerek yok ──
-            # XTTS-v2 ~2GB VRAM lazim. Gemma 8192ctx (~4GB) bosaltilmasi sonraki
-            # asamayi rahatlatir, OOM riskini sifirlar.
+            # ── Release VRAM: all segments translated, Gemma is no longer needed ──
+            # XTTS-v2 needs ~2 GB VRAM. Evicting Gemma 8192-ctx (~4 GB) gives
+            # the next stage breathing room and eliminates OOM risk.
             try:
                 self.translator.unload_local_model()
-                prog(0.52, "Gemma VRAM bosaltildi (XTTS icin pay aciliyor)...", "#5b9ef9")
+                prog(0.52, "Gemma evicted from VRAM (making room for XTTS)...", "#5b9ef9")
             except Exception:
                 pass
 
-            # ── 4. Referans ses (konusmaci profili) ─────────────────────
-            prog(0.53, "Konusmaci referans sesi seciliyor...", "#f5a623")
+            # ── 4. Reference audio (speaker profile) ──────────────────
+            prog(0.53, "Selecting speaker reference audio...", "#f5a623")
             ref_wavs = self._extract_reference(wav_path, segments)
-            prog(0.55, f"{len(ref_wavs)} adet temiz referans segmenti seciliyor.", "#23d05e")
+            prog(0.55, f"{len(ref_wavs)} clean reference segment(s) selected.", "#23d05e")
 
-            # ── 5. XTTS speaker latent (bir kez hesapla) ──────────────
-            prog(0.56, "XTTS-v2 hazırlaniyor...", "#f5a623")
+            # ── 5. XTTS speaker latent (computed once) ────────────────
+            prog(0.56, "Preparing XTTS-v2...", "#f5a623")
             self._ensure_xtts_loaded()
-            prog(0.60, "Konusmaci ses profili olusturuluyor...", "#f5a623")
+            prog(0.60, "Building the speaker voice profile...", "#f5a623")
             gpt_latent, spk_emb = self._get_speaker_latents(ref_wavs)
 
-            # ── 5b. Her segment icin ses sentezi ─────────────────────
+            # ── 5b. Synthesize each segment ──────────────────────────
             seg_wavs = [None] * total
             for i, seg in enumerate(translated):
                 p = 0.60 + 0.28 * (i / total)
-                prog(p, f"Ses sentezi: {i+1}/{total}", "#5b9ef9")
+                prog(p, f"Synthesizing: {i+1}/{total}", "#5b9ef9")
 
                 if not seg.get("text_en"):
                     continue
 
-                # XTTS-v2 emoji/markdown/cok kisa metinlerde halusinasyon yapar.
-                # Burada budayip, gerekirse segmenti atliyoruz (sessizlik kalir).
+                # XTTS-v2 hallucinates on emoji / markdown / very short inputs.
+                # Sanitize the text here; skip the segment (leave silence) if
+                # the result is empty.
                 clean_text = self._clean_text_for_tts(seg["text_en"])
                 if not clean_text:
                     continue
@@ -302,42 +310,43 @@ class DubbingPipeline:
                 seg_wavs[i] = out_wav
 
             # ── 6. Timeline assembly ──────────────────────────────────
-            prog(0.89, "Ses parcalari timeline'a yerlestiriliyor...", "#f5a623")
+            prog(0.89, "Placing audio segments on the timeline...", "#f5a623")
             dubbed_wav = os.path.join(self._tmp_dir, "dubbed_full.wav")
             self._assemble_audio(translated, seg_wavs, video_duration, dubbed_wav)
 
-            # ── 7. Final mix: dublaj + (varsa) instrumental + video birlesimi ─
-            # instrumental_path varsa: ffmpeg sidechain compression ile auto-ducking
-            # uygulanir — orijinal muzik/ortam sesi kisik sekilde dublajin altina
-            # yerlesir, konusma sirasinda otomatik kisilir.
-            # Yoksa: klasik mux (sadece dublaj sesi).
-            prog(0.94, "Video ile birlestiriliyor (sidechain mix)...", "#f5a623")
+            # ── 7. Final mix: dubbed voice + (optional) instrumental + video mux ─
+            # When instrumental_path is set, ffmpeg's sidechain compression
+            # performs auto-ducking — the original music / ambience plays at a
+            # reduced level under the dubbed dialogue and recovers between
+            # utterances.
+            # When it is None: classic mux (dubbed voice only).
+            prog(0.94, "Muxing into video (sidechain mix)...", "#f5a623")
             self._mix_with_instrumental(
                 video_path, dubbed_wav, instrumental_path, output_path
             )
 
-            prog(1.0, f"Tamamlandi!  →  {os.path.basename(output_path)}", "#23d05e")
+            prog(1.0, f"Complete!  →  {os.path.basename(output_path)}", "#23d05e")
             return output_path
 
         finally:
-            # Dublaj modunu MUTLAKA kapat — belge cevirisine sizmasin.
+            # ALWAYS disable dubbing mode — it must not leak into document translation.
             try:
                 self.translator.set_dubbing_mode(False)
             except Exception:
                 pass
-            # Kullanicinin orijinal modunu geri yukle (online ise online).
+            # Restore the user's original translator mode (online if it was online).
             try:
                 self.translator.set_mode(prev_mode)
             except Exception:
                 pass
-            # Whisper'i de orijinal moduna dondur (canli ceviri etkilenmesin).
+            # Restore the original Whisper mode so live translation is unaffected.
             try:
                 self.transcriber.set_mode(prev_stt_mode)
             except Exception:
                 pass
-            # Gecici dosyalari temizle
+            # Clean up the temporary files.
             self._cleanup(seg_wavs + ref_wavs + [wav_path, dubbed_wav])
-            # Demucs gecici klasorunu sil (vocals + instrumental dahil)
+            # Remove the Demucs scratch directory (vocals + instrumental included).
             if demucs_work_dir is not None:
                 try:
                     self.separator.cleanup(demucs_work_dir)
@@ -345,7 +354,233 @@ class DubbingPipeline:
                     pass
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 1: WAV AYIKLAMA
+    # SUBTITLE-ONLY PIPELINE (no XTTS)
+    # ═══════════════════════════════════════════════════════════
+
+    def process_subtitles(self, video_path: str, output_path: str,
+                          src_lang="tr", tgt_lang="en",
+                          src_name="Turkish", tgt_name="English",
+                          progress_cb=None, transcript_cb=None,
+                          translation_cb=None, burn_in: bool = False):
+        """Generate a translated subtitle track and mux it into the video.
+
+        Reuses stages 1-3 of the dubbing pipeline (extract audio -> Whisper ->
+        per-segment LLM translation), then writes an SRT file and muxes it into
+        the source video as a soft subtitle track (no XTTS, no re-encode).
+
+        Args:
+            burn_in: If True, hard-burn the subtitles into the video (re-encodes).
+                     If False (default), embed as a soft subtitle track (fast, lossless).
+        """
+
+        def prog(f, msg, color="#5b9ef9"):
+            print(f"[SUBS] ({int(f*100)}%) {msg}")
+            if progress_cb:
+                progress_cb(f, msg, color)
+
+        wav_path = None
+        srt_path = None
+
+        prev_mode = self.translator.mode
+        prev_stt_mode = self.transcriber.mode
+
+        target_mode = self.translator.mode
+        if self.config is not None:
+            target_mode = self.config.get("mode", "llm", "backend", default=target_mode)
+
+        if target_mode == "offline":
+            self.translator.set_mode("offline")
+        else:
+            self.translator.set_mode("online")
+            self.translator.unload_local_model()
+
+        try:
+            self.translator.set_dubbing_mode(True)
+        except Exception:
+            pass
+
+        try:
+            # ── 1. Extract audio (16 kHz mono) ─────────────────────────
+            prog(0.05, "Extracting audio from video...", "#f5a623")
+            wav_path = self._extract_wav(video_path)
+
+            # ── 2. Whisper transcription ───────────────────────────────
+            prog(0.15, "Whisper generating transcript...", "#5b9ef9")
+            segments = self._transcribe_segments(wav_path, language=src_lang)
+            if not segments:
+                raise RuntimeError(f"No {src_name} speech detected in the video.")
+
+            segments = self._merge_short_segments(segments)
+            segments = self._consolidate_segments(segments)
+            prog(0.30, f"{len(segments)} segments detected.", "#23d05e")
+
+            if transcript_cb:
+                try:
+                    transcript_cb([dict(s) for s in segments])
+                except Exception:
+                    pass
+
+            # Free Whisper VRAM before loading the LLM (same logic as dubbing).
+            if prev_stt_mode in ("local_gpu", "local_gpu_hq"):
+                try:
+                    self.transcriber.set_mode("local_cpu")
+                except Exception:
+                    pass
+
+            # ── 3. Translate each segment ──────────────────────────────
+            if self.translator.mode == "offline" and self.translator.local_llm is None:
+                prog(0.32, "Loading the local Gemma 4 engine (30-60s)...", "#f5a623")
+                self.translator.load_local_model(8192)
+            elif self.translator.mode == "offline" and getattr(self.translator, "_n_ctx", 4096) < 8192:
+                prog(0.32, "Reloading the local Gemma 4 engine with a wider context...", "#f5a623")
+                self.translator.load_local_model(8192)
+
+            translated = []
+            total = len(segments)
+            prev_translation = ""
+            rolling_summary = ""
+            CTX_WINDOW = 3
+
+            for i, seg in enumerate(segments):
+                p = 0.32 + 0.55 * (i / total)
+                prog(p, f"Translating: {i+1}/{total}  \"{seg['text'][:40]}\"", "#5b9ef9")
+
+                context_segs = [s["text"] for s in segments[max(0, i - CTX_WINDOW):i]]
+                seg_duration = max(0.5, seg["end"] - seg["start"])
+
+                try:
+                    result = self.translator.translate(
+                        seg["text"],
+                        context=context_segs,
+                        src_lang=src_lang,
+                        tgt_lang=tgt_lang,
+                        src_name=src_name,
+                        tgt_name=tgt_name,
+                        prev_translation=prev_translation,
+                        rolling_summary=rolling_summary,
+                        target_duration_sec=seg_duration,
+                    )
+                    text_en = result.get("translation", "").strip() or seg["text"]
+                except Exception as e:
+                    print(f"[SUBS] Translation failed for segment {i}: {e}")
+                    text_en = seg["text"]
+
+                translated.append({**seg, "text_en": text_en})
+                prev_translation = text_en
+
+                if translation_cb:
+                    try:
+                        translation_cb(i, total, text_en)
+                    except Exception:
+                        pass
+
+                if (i + 1) % 5 == 0 or i == 0:
+                    try:
+                        rolling_summary = self.translator.generate_summary(
+                            text_en, rolling_summary
+                        )
+                    except Exception:
+                        pass
+
+            # ── 4. Write the SRT file next to the output ───────────────
+            prog(0.90, "Writing SRT file...", "#f5a623")
+            srt_path = os.path.splitext(output_path)[0] + ".srt"
+            self._write_srt(translated, srt_path)
+
+            # ── 5. Mux subtitles into the video ────────────────────────
+            prog(0.95, "Muxing subtitles into the video...", "#f5a623")
+            if burn_in:
+                self._burn_subtitles(video_path, srt_path, output_path)
+            else:
+                self._mux_soft_subtitles(video_path, srt_path, output_path, tgt_lang)
+
+            prog(1.0, "Subtitles ready.", "#23d05e")
+            return output_path
+
+        finally:
+            try:
+                self.translator.set_mode(prev_mode)
+            except Exception:
+                pass
+            try:
+                self.translator.set_dubbing_mode(False)
+            except Exception:
+                pass
+            try:
+                self.transcriber.set_mode(prev_stt_mode)
+            except Exception:
+                pass
+            self._cleanup([wav_path])
+
+    @staticmethod
+    def _format_srt_timestamp(seconds: float) -> str:
+        """Convert a float seconds value to SRT format ``HH:MM:SS,mmm``."""
+        if seconds < 0:
+            seconds = 0.0
+        ms = int(round(seconds * 1000))
+        h, ms = divmod(ms, 3600_000)
+        m, ms = divmod(ms, 60_000)
+        s, ms = divmod(ms, 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    def _write_srt(self, segments: list, srt_path: str):
+        """Write translated segments to an SRT file (UTF-8, BOM-less)."""
+        with open(srt_path, "w", encoding="utf-8") as f:
+            for i, seg in enumerate(segments, start=1):
+                start = self._format_srt_timestamp(seg["start"])
+                end   = self._format_srt_timestamp(seg["end"])
+                text  = (seg.get("text_en") or "").strip().replace("\r\n", "\n")
+                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+
+    def _mux_soft_subtitles(self, video_path: str, srt_path: str,
+                            output_path: str, lang_code: str = "eng"):
+        """Embed the SRT into the video as a soft subtitle track (no re-encode)."""
+        # ISO-639-2/T 3-letter code is preferred for mov_text; map common cases.
+        iso_map = {
+            "en": "eng", "tr": "tur", "de": "deu", "fr": "fra",
+            "it": "ita", "es": "spa", "ar": "ara", "ja": "jpn",
+        }
+        lang3 = iso_map.get(lang_code, lang_code[:3] or "und")
+
+        ext = os.path.splitext(output_path)[1].lower()
+        sub_codec = "mov_text" if ext in (".mp4", ".m4v", ".mov") else "srt"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", srt_path,
+            "-map", "0:v?", "-map", "0:a?", "-map", "1:0",
+            "-c:v", "copy", "-c:a", "copy",
+            "-c:s", sub_codec,
+            f"-metadata:s:s:0", f"language={lang3}",
+            "-disposition:s:0", "default",
+            output_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, timeout=600)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg subtitle mux failed:\n{r.stderr.decode(errors='replace')[:400]}"
+            )
+
+    def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str):
+        """Hard-burn the subtitles into the video (re-encodes the video stream)."""
+        # ffmpeg subtitles filter requires forward slashes and escaping on Windows.
+        srt_filter = srt_path.replace("\\", "/").replace(":", "\\:")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vf", f"subtitles='{srt_filter}'",
+            "-c:a", "copy",
+            output_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, timeout=3600)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg subtitle burn-in failed:\n{r.stderr.decode(errors='replace')[:400]}"
+            )
+
+    # ═══════════════════════════════════════════════════════════
+    # STAGE 1: WAV EXTRACTION
     # ═══════════════════════════════════════════════════════════
 
     def _extract_wav(self, video_path: str) -> str:
@@ -357,7 +592,7 @@ class DubbingPipeline:
         )
         if r.returncode != 0:
             raise RuntimeError(
-                f"ffmpeg ses ayiklama hatasi:\n{r.stderr.decode(errors='replace')[:300]}"
+                f"ffmpeg audio extraction failed:\n{r.stderr.decode(errors='replace')[:300]}"
             )
         return out
 
@@ -366,21 +601,22 @@ class DubbingPipeline:
             return wf.getnframes() / wf.getframerate()
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 2: ZAMAN DAMGALI TRANSKRIPT
+    # STAGE 2: TIMESTAMPED TRANSCRIPTION
     # ═══════════════════════════════════════════════════════════
 
     def _transcribe_segments(self, wav_path: str, language="tr") -> list:
-        """Faster-whisper ile her segment icin start/end/text doner.
+        """Run faster-whisper and return start / end / text per segment.
 
-        Dublaj icin **ozel bir medium model** yukler — kullanicinin
-        transcriber'i etkilenmez. Bu kritik: cloud_auto modda kullanicinin
-        transcriber.model'i 'base/CPU' fallback olur, Turkce icin yetersizdir.
-        Dublaj batch bir is, kalite > hiz; bu yuzden medium kullaniyoruz.
+        Loads a dedicated **medium model** for dubbing so the user's transcriber
+        is not affected. This is critical: when cloud_auto is active, the user's
+        transcriber.model is the 'base/CPU' fallback, which is insufficient for
+        Turkish. Dubbing is a batch workload — quality matters more than speed,
+        so we deliberately use 'medium'.
 
-        Strateji:
-          1. GPU varsa medium-GPU (en iyi Turkce dogrulugu, ~1.5 GB VRAM)
-          2. GPU yoksa veya yuklemede OOM olursa small-CPU'ya dus
-          3. Transkript bitince modeli serbest birak (LLM icin VRAM ac)
+        Strategy:
+          1. Try medium on the GPU (best Turkish accuracy, ~1.5 GB VRAM).
+          2. Fall back to small on the CPU when no GPU is available or load OOMs.
+          3. Release the model once the transcript is produced (free VRAM for the LLM).
         """
         from faster_whisper import WhisperModel
         import torch as _torch
@@ -389,19 +625,19 @@ class DubbingPipeline:
         local_model = None
         used_size, used_device = "small", "cpu"
 
-        # 1. Once medium-GPU dene
+        # 1. Try medium-GPU first.
         if _torch.cuda.is_available():
             try:
-                print("[DUBBER] Whisper 'medium' GPU yukleniyor (yuksek kalite transkript)...")
+                print("[DUBBER] Loading Whisper 'medium' on the GPU (high-quality transcript)...")
                 local_model = WhisperModel("medium", device="cuda", compute_type="int8")
                 used_size, used_device = "medium", "cuda"
             except Exception as e:
-                print(f"[DUBBER] medium-GPU basarisiz ({e}); small-CPU'ya dusuluyor.")
+                print(f"[DUBBER] medium-GPU failed ({e}); falling back to small-CPU.")
                 local_model = None
 
-        # 2. Fallback: small-CPU (base'den daha iyi, CPU'da makul hiz)
+        # 2. Fallback: small-CPU (better than 'base', acceptable CPU latency).
         if local_model is None:
-            print("[DUBBER] Whisper 'small' CPU yukleniyor (fallback)...")
+            print("[DUBBER] Loading Whisper 'small' on the CPU (fallback)...")
             local_model = WhisperModel("small", device="cpu", compute_type="int8")
             used_size, used_device = "small", "cpu"
 
@@ -409,49 +645,50 @@ class DubbingPipeline:
             segments_iter, _info = local_model.transcribe(
                 wav_path,
                 language=language,
-                beam_size=5,                          # 2 -> 5 (daha iyi arama, +%10 dogruluk)
-                best_of=5,                            # 2 -> 5
-                # VAD KAPALI: Faster-Whisper VAD agresif davranip uzun konusma
-                # parcalarini "sessizlik" sayip atiyor. VAD sadece XTTS referans
-                # ses cikarmada (gurultu/muzik filtreleme icin) kullanilmali —
-                # transkripsiyonda hicbir konusma kaybi olmasin.
+                beam_size=5,                          # 2 -> 5 (wider search, +~10% accuracy).
+                best_of=5,                            # 2 -> 5.
+                # VAD DISABLED: the faster-whisper VAD is overly aggressive
+                # and labels long speech blocks as 'silence', dropping them
+                # entirely. VAD is only used in the reference-audio extractor
+                # (to filter noise / music) — transcription should never drop
+                # speech.
                 vad_filter=False,
-                condition_on_previous_text=True,      # Baglam yardim eder, hatali metin yapismaz
-                temperature=0.0,                      # Deterministic
+                condition_on_previous_text=True,      # Context helps; the transcript stays coherent.
+                temperature=0.0,                      # Deterministic decoding.
 
-                # ── WHISPER BEKCILERI TAMAMEN GEVSETILDI (DEMUCS UYUMU) ─────
-                # Pipeline akisi: Demucs once vokal/instrumental ayriyor, Whisper
-                # sadece TEMIZ vocals.wav uzerinde calisiyor. Halusinasyon kaynagi
-                # olan muzik/gurultu zaten yok. Bu yuzden Whisper'in kendi koruma
-                # filtreleri arti-katki vermiyor, tam tersine bogulan/sulu vokal
-                # bolgelerinde gercek konusmayi siliyor.
+                # ── WHISPER GUARD RAILS FULLY RELAXED (POST-DEMUCS) ─────
+                # Pipeline ordering: Demucs separates vocals / instrumental,
+                # Whisper runs only on the clean vocals.wav — the hallucination
+                # sources (music, noise) are already gone. Whisper's own
+                # protective filters now produce zero upside and actively delete
+                # real speech in low-energy / breathy regions.
                 #
-                # Onceki ayarlar (0.5 default -> 0.85) bazi 30sn'lik konusma
-                # bloklarini hala yutuyordu. Final tasarim:
-                #   - compression_ratio_threshold=None: kendini-tekrar koruma
-                #     kapali (Demucs sonrasi nadir; gercek konusmayi silmesin)
-                #   - log_prob_threshold=None: Whisper bogulan sese %50 emin
-                #     bile olsa metne donsun, atmasin
-                #   - no_speech_threshold=0.95: yalnizca %95 'kesin sessizlik'
-                #     sayilan segmentler atilir
+                # Previous settings (0.5 default -> 0.85) still swallowed some
+                # 30-s speech blocks. Final design:
+                #   - compression_ratio_threshold=None: self-repetition guard
+                #     disabled (rare after Demucs; must not delete real speech).
+                #   - log_prob_threshold=None: even 50%-confident speech is
+                #     emitted (don't drop it).
+                #   - no_speech_threshold=0.95: only segments classified as
+                #     95%-certain silence are dropped.
                 compression_ratio_threshold=None,
                 log_prob_threshold=None,
                 no_speech_threshold=0.95,
             )
             result = []
             for seg in segments_iter:
-                # Manuel post-filter de %95'e cekildi — Whisper'a yetki ver,
-                # sadece kesin gurultu durumunda ele.
+                # Manual post-filter also lifted to 95% — defer to Whisper and
+                # only reject in the highest-confidence noise cases.
                 if seg.no_speech_prob > 0.95:
                     continue
                 text = seg.text.strip()
                 if not text:
                     continue
                 result.append({"start": seg.start, "end": seg.end, "text": text})
-            print(f"[DUBBER] Whisper '{used_size}/{used_device}' transkript bitti, {len(result)} segment.")
+            print(f"[DUBBER] Whisper '{used_size}/{used_device}' transcript done; {len(result)} segments.")
             return result
         finally:
-            # Modeli hemen serbest birak — Gemma'ya VRAM lazim
+            # Release the model immediately — Gemma needs VRAM next.
             try:
                 del local_model
             except Exception:
@@ -461,17 +698,17 @@ class DubbingPipeline:
                 _torch.cuda.empty_cache()
 
     def _merge_short_segments(self, segments: list) -> list:
-        """Cok kisa segmentleri bir oncekine birlestir.
+        """Merge very short segments into the preceding one.
 
-        XTTS-v2 < 1.5 saniye veya 1-3 kelimelik metinlerde garip prosody ve
-        akustik artifakt uretir. Bu segmentleri oncekiyle birlestirerek daha
-        dogal cumleler olustururuz. Yan etki: cevirinin baglami da iyilesir
-        (kisa parcayi standalone cevirmek yerine biraz daha uzun context).
+        XTTS-v2 produces awkward prosody and acoustic artifacts on inputs that
+        are <1.5 s or 1-3 words. Merging short fragments into their predecessor
+        yields more natural sentence-length utterances. Bonus: the translator
+        sees more context (instead of translating a short fragment in isolation).
 
-        Birlestirme kosullari:
-          - Sure < 1.5s VEYA kelime sayisi < 4 (kisa segment kriteri)
-          - Onceki segmentle arasinda < 0.6sn bosluk (akustik uzaklik)
-          - Birlestikten sonra toplam sure <= 12s (XTTS sınırı asilmasin)
+        Merge conditions:
+          - Duration < 1.5 s OR word count < 4 (short-segment criteria).
+          - Gap to the preceding segment < 0.6 s (acoustic proximity).
+          - Merged total <= 12 s (do not blow past the XTTS limit).
         """
         if not segments:
             return segments
@@ -500,34 +737,35 @@ class DubbingPipeline:
         return merged
 
     def _consolidate_segments(self, segments: list) -> list:
-        """Whisper segmentlerini 6-10sn'lik mantiksal bloklara grupla.
+        """Group Whisper segments into 6-10 s logical blocks.
 
-        `_merge_short_segments`'ten farkli: o sadece kritik kisa parcalari
-        kurtariyor. Bu fonksiyon ise **tum segmentleri** proaktif olarak
-        daha buyuk bloklara birlestirir.
+        Distinct from ``_merge_short_segments``, which only rescues critically
+        short fragments. This function **proactively** consolidates every
+        segment into larger blocks.
 
-        Faydalari:
-          - LLM cagri sayisi yaklasik yariya iner (kota dostu, hizli)
-          - XTTS daha uzun ve dogal cumleler alir -> prosody kalitesi artar,
-            robotik his azalir
-          - Cumleler arasi baglam butunlugu korunur
+        Benefits:
+          - LLM call count drops by roughly half (quota-friendly, faster).
+          - XTTS sees longer, more natural sentences -> better prosody, less
+            robotic delivery.
+          - Cross-sentence context coherence is preserved.
 
-        Birlestirme kurallari (oncelik sirasiyla):
-          1. Blok suresi TARGET_MIN'i (6s) gectiyse VE mevcut metin cumle sonu
-             noktalama ile bitiyorsa -> blogu kapat (dogal cumle siniri)
-          2. Iki segment arasi bosluk > MAX_GAP (0.8s) -> blogu kapat
-             (uzun durus, muhtemel cumle/konu degisimi)
-          3. Birlestiginde TARGET_MAX'i (14s) asiyorsa -> blogu kapat
-             (XTTS uzun text'te kalitesini kaybeder)
-          4. Yukaridakilerin hicbiri degilse -> birlestir
+        Block-closing rules (in priority order):
+          1. Block duration > TARGET_MIN (6 s) AND the current text ends in
+             sentence-final punctuation -> close the block (natural sentence
+             boundary).
+          2. Gap between adjacent segments > MAX_GAP (0.8 s) -> close
+             (long pause, likely scene / topic change).
+          3. Merging would exceed TARGET_MAX (14 s) -> close
+             (XTTS loses quality on overly long text).
+          4. None of the above -> merge.
         """
         if not segments:
             return segments
 
-        TARGET_MIN = 6.0     # blok bu suresinin altindaysa cumle sonu olsa bile kapatma
-        TARGET_MAX = 10.0    # XTTS-v2 attention budget: 10sn ustu prosody bozulur,
-                             # halusinasyon/metalik tonlama. Eskiden 14sn idi -> dusuruldu.
-        MAX_GAP    = 0.8     # ardisik segmentler arasi tolere edilen bosluk
+        TARGET_MIN = 6.0     # Below this duration the block stays open even on a sentence boundary.
+        TARGET_MAX = 10.0    # XTTS-v2 attention budget: prosody breaks down beyond 10 s,
+                             # producing hallucination / metallic tone. Originally 14 s — lowered.
+        MAX_GAP    = 0.8     # Tolerated silence gap between adjacent segments.
         SENT_END   = (".", "!", "?")
 
         consolidated = []
@@ -544,7 +782,7 @@ class DubbingPipeline:
             current_text = current["text"].rstrip()
             ends_sentence = current_text.endswith(SENT_END)
 
-            # Blok kapatma kararlari
+            # Block-closing decisions.
             close_block = False
             if merged_dur > TARGET_MAX:
                 close_block = True
@@ -557,7 +795,7 @@ class DubbingPipeline:
                 consolidated.append(current)
                 current = dict(seg)
             else:
-                # Birlestir
+                # Merge.
                 current["end"] = seg["end"]
                 sep = " " if not current["text"].rstrip().endswith("-") else ""
                 current["text"] = (current["text"].rstrip() + sep + seg["text"].lstrip()).strip()
@@ -568,41 +806,43 @@ class DubbingPipeline:
         return consolidated
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 4: REFERANS SES
+    # STAGE 4: REFERENCE AUDIO
     # ═══════════════════════════════════════════════════════════
 
     def _extract_reference(self, wav_path: str, segments: list) -> list:
-        """Konusmaci klonlamasi icin coklu referans ses cikarir.
+        """Extract multiple reference clips for speaker cloning.
 
-        XTTS-v2 birden fazla referans kabul eder; bu konusmaci identity'sini
-        sabitler ve tek bir bozuk segmentin (muzik, gurultu) etkisini azaltir.
+        XTTS-v2 accepts multi-reference input; supplying several clips stabilizes
+        the speaker identity and dilutes the impact of any single corrupted
+        clip (music, noise).
 
-        Strateji:
-          - 4-10 saniye araliginda olan segmentleri tercih et (cok kisa = az bilgi,
-            cok uzun = arka plan gurultusu birikir)
-          - En uzun 3 segmenti seç
-          - Her birinde ffmpeg silenceremove ile bas/son sessizliklerini kirp
-          - Sonuc < 2sn ise o referansi reddet
+        Strategy:
+          - Prefer 4-10 s segments (too short -> insufficient signal;
+            too long -> background noise accumulates).
+          - Pick the 3 longest segments.
+          - Trim leading / trailing silence in each clip with ffmpeg
+            ``silenceremove``.
+          - Reject any candidate that comes out shorter than 2 s.
 
-        Returns: Liste halinde wav dosya yollari (1-3 adet).
+        Returns: a list of WAV file paths (1-3 entries).
         """
-        # Aday segmentler: 4-10 saniye araliginda — burada **bol** topla,
-        # sonra kalite skoruyla en iyi 3'u secelim. Ne kadar cok aday, o kadar
-        # secici olabiliriz (gurultulu/muzikli segmentleri eleriz).
+        # Candidate segments in the 4-10 s window — collect generously so the
+        # quality scorer can pick the best 3. The bigger the candidate pool, the
+        # more selective we can be (rejecting noisy / musical fragments).
         candidates = [s for s in segments
                       if 4.0 <= (s["end"] - s["start"]) <= 10.0]
 
         if not candidates:
-            # Fallback: en uzun 1 segment (her ihtimale karsi)
+            # Fallback: take the single longest segment.
             candidates = sorted(segments, key=lambda s: s["end"] - s["start"],
                                 reverse=True)[:1]
         else:
-            # En uzun 10 adayi al — 3'unu skor ile sececegiz
+            # Take the 10 longest candidates — the scorer will pick the top 3.
             candidates = sorted(candidates, key=lambda s: s["end"] - s["start"],
                                 reverse=True)[:10]
 
-        # silenceremove: bas tarafta 0.1sn sessizligi -40dB esikle kirp,
-        # areverse ile son tarafta da ayni islemi tekrarla
+        # silenceremove: trim leading silence below -40 dB for up to 0.1 s, then
+        # use ``areverse`` to do the same at the tail.
         silence_filter = (
             "silenceremove=start_periods=1:start_silence=0.1:start_threshold=-40dB,"
             "areverse,"
@@ -610,10 +850,11 @@ class DubbingPipeline:
             "areverse"
         )
 
-        # Her adayi cikar + skorla. Skorlama mantigi `_score_reference_wav`'da:
-        #   yuksek mean_rms (cok kisik degil) +
-        #   dusuk rms varyansi (konusma tonu kararli, muzik degil) +
-        #   dusuk silence ratio (yarisi sessizlik degil) -> yuksek skor.
+        # Extract every candidate and score it. Scoring logic lives in
+        # ``_score_reference_wav``:
+        #   high mean_rms (not too quiet) +
+        #   low RMS variance (stable speech tone, not music) +
+        #   low silence ratio (not >50% silence) -> high score.
         scored = []  # [(score, wav_path, seg)]
         for i, seg in enumerate(candidates):
             out = os.path.join(self._tmp_dir, f"dub_ref_cand_{i}.wav")
@@ -636,13 +877,13 @@ class DubbingPipeline:
                 continue
             score = self._score_reference_wav(out)
             if score <= 0.0:
-                # Sessizlik ya da bozuk, ele
+                # Silence or corrupted — reject.
                 try: os.remove(out)
                 except OSError: pass
                 continue
             scored.append((score, out, seg))
 
-        # En iyi 3 skoru sec, gerisini sil
+        # Keep the top-3 scores; delete the rest.
         scored.sort(key=lambda x: x[0], reverse=True)
         ref_paths = [p for (_, p, _) in scored[:3]]
         for _, p, _ in scored[3:]:
@@ -651,10 +892,10 @@ class DubbingPipeline:
 
         if ref_paths:
             top_scores = [f"{s:.3f}" for (s, _, _) in scored[:len(ref_paths)]]
-            print(f"[DUBBER] Referans secimi: {len(ref_paths)} aday "
-                  f"(skorlar: {', '.join(top_scores)})")
+            print(f"[DUBBER] Reference selection: {len(ref_paths)} candidate(s) "
+                  f"(scores: {', '.join(top_scores)})")
 
-        # Hicbir aday yeterli olmazsa: ilk 8sn'yi cig al (son care)
+        # Last-resort fallback: take the first 8 s raw if every candidate failed.
         if not ref_paths:
             fallback = os.path.join(self._tmp_dir, "dub_ref_fallback.wav")
             subprocess.run(
@@ -669,22 +910,22 @@ class DubbingPipeline:
         return ref_paths
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 5: XTTS SES KLONLAMA
+    # STAGE 5: XTTS VOICE CLONING
     # ═══════════════════════════════════════════════════════════
 
     def _score_reference_wav(self, wav_path: str) -> float:
-        """Bir referans wav'inin XTTS icin uygunlugunu skorlar.
+        """Score a reference WAV's fitness for XTTS.
 
-        Skorlama mantigi:
-          - mean_rms: ortalama enerji. Cok kisik (uzak/yankili) sesi cezalandirir.
-          - rms_kararliligi (1 / (1 + std/mean)): muzik veya degisken arka plan
-            yuksek varyans uretir; konusma tonu daha kararlidir.
-          - silence_ratio: 100ms penceredeki sessiz oranlari. Yuksek olmasi
-            referans icindeki bos zamanlari isaretler; kotu sinyal.
-          - clipping_ratio: |x| > 0.99 olan ornek orani. Distorted ses XTTS'i
-            sapitir.
+        Scoring rationale:
+          - mean_rms: average energy. Penalizes very quiet / distant / reverberant audio.
+          - RMS stability (1 / (1 + std/mean)): music or a variable background
+            produces high variance; speech tone is more consistent.
+          - silence_ratio: fraction of 100 ms windows below the silence floor;
+            high values indicate dead air inside the reference — bad signal.
+          - clipping_ratio: fraction of samples with |x| > 0.99. Distortion
+            throws XTTS off.
 
-        Returns: 0.0 = kotu/atilmali, ~0.10-0.30 = normal konusma, daha yuksek = ideal.
+        Returns: 0.0 = bad / reject, ~0.10-0.30 = normal speech, higher = ideal.
         """
         try:
             with wave.open(wav_path, "rb") as wf:
@@ -701,7 +942,7 @@ class DubbingPipeline:
             if len(x) < sr * 1.5:
                 return 0.0
 
-            # 100ms pencere RMS
+            # 100 ms windowed RMS.
             w = max(1, sr // 10)
             n_w = len(x) // w
             if n_w < 5:
@@ -713,10 +954,10 @@ class DubbingPipeline:
             silence_ratio = float((rms_pw < 0.01).mean())
             clipping_ratio = float((np.abs(x) > 0.99).mean())
 
-            # Cok kisik ya da cok bos: ele
+            # Too quiet or too sparse: reject.
             if mean_rms < 0.015 or silence_ratio > 0.5:
                 return 0.0
-            # Asiri clipping: distorted, ele
+            # Excessive clipping: distorted, reject.
             if clipping_ratio > 0.02:
                 return 0.0
 
@@ -728,54 +969,55 @@ class DubbingPipeline:
 
     @staticmethod
     def _clean_text_for_tts(text: str) -> str:
-        """XTTS'e gondermeden once metni temizle.
+        """Sanitize the text before feeding it to XTTS.
 
-        XTTS-v2 hassas: emoji, fazla noktalama, markdown isaretleri, parantez
-        icindeki yan aciklamalar ("(laughs)", "[music]") ile karsilasinca
-        halusinasyon yapar/sapitir. Burada bunlari budariz.
+        XTTS-v2 is sensitive: emoji, excessive punctuation, markdown markers
+        and parenthetical stage directions ("(laughs)", "[music]") trigger
+        hallucinations and prosody breakdowns. We strip them here.
 
-        Returns: temiz metin, ya da cok kisa/anlamsizsa "" (segment atlanir).
+        Returns: the cleaned string, or "" when the result is too short /
+        meaningless (the segment will then be skipped).
         """
         if not text:
             return ""
         s = text.strip()
-        # Markdown ve tirnak/asteriks
+        # Markdown / quotes / asterisks.
         s = re.sub(r"[*_~`#]+", "", s)
         s = s.replace("\u201c", "").replace("\u201d", "").replace("\u2018", "").replace("\u2019", "'")
         s = s.replace('"', "")
-        # Parantez/koseli parantez icindeki yan aciklamalar (laughs, music vb.)
+        # Parenthetical / bracketed stage directions (laughs, music, ...).
         s = re.sub(r"\([^)]{0,40}\)", "", s)
         s = re.sub(r"\[[^\]]{0,40}\]", "", s)
-        # Emoji ve cogu non-BMP sembol
+        # Emoji and most non-BMP symbols.
         s = re.sub(r"[\U00010000-\U0010ffff]", "", s)
-        # Cok arda gelen ayni noktalama: "..." -> "...", "!!!" -> "!"
+        # Collapse runaway repeated punctuation: "..." -> "...", "!!!" -> "!".
         s = re.sub(r"([.!?,;:])\1{2,}", r"\1\1\1", s)
-        # Cok bosluk
+        # Whitespace.
         s = re.sub(r"\s+", " ", s).strip()
-        # Cok kisa veya sadece noktalama: segment atla
+        # Too short / pure punctuation: skip the segment.
         alnum = re.sub(r"[^A-Za-z0-9\u00C0-\u017F]", "", s)
         if len(alnum) < 4:
             return ""
         return s
 
     def _ensure_xtts_loaded(self):
-        """XTTS modelinin GPU'da yuklü olmasini saglar."""
+        """Guarantee that the XTTS model is loaded on the GPU."""
         if self.synthesizer.xtts_model is None:
             if self.synthesizer._xtts_loading:
                 self.synthesizer._xtts_ready.wait()
             elif not self.synthesizer._load_xtts_model(use_gpu=True):
                 raise RuntimeError(
-                    "XTTS GPU yuklenemedi (VRAM). Dublaj icin yeterli VRAM gerekir."
+                    "XTTS failed to load on the GPU (VRAM). Dubbing requires sufficient VRAM."
                 )
         if self.synthesizer.xtts_model is None:
-            raise RuntimeError("XTTS modeli yuklenemedi.")
+            raise RuntimeError("XTTS model failed to load.")
 
     def _get_speaker_latents(self, ref_wavs):
-        """Referans seslerden speaker kondisyonlama latent'ini hesaplar (bir kez).
+        """Compute the speaker-conditioning latents from the reference audio (once).
 
-        ref_wavs: tekil str veya str listesi (XTTS multi-ref destegi).
-        Coklu ref kullanildiginda XTTS GPT bunlari ortalar -> konusmaci
-        identity'si daha sabit, tek bir bozuk segmentin etkisi azalir.
+        ref_wavs: a single str or a list of strs (XTTS multi-ref support).
+        Multi-ref input is averaged by the XTTS GPT, stabilizing the speaker
+        identity and reducing the impact of any single corrupted segment.
         """
         if isinstance(ref_wavs, str):
             ref_wavs = [ref_wavs]
@@ -787,33 +1029,35 @@ class DubbingPipeline:
 
     def _synthesize_segment(self, text: str, gpt_latent, spk_emb,
                             out_path: str):
-        """Tek segment icin XTTS inference, WAV dosyasina yazar.
+        """Run XTTS inference for a single segment and write the WAV to disk.
 
-        Konservatif/stabil parametreler — dublaj kalitesi icin secildi.
-        XTTS-v2 default'lari: temperature=0.75, length_penalty=1.0,
+        Conservative / stable parameter set — chosen for dubbing quality.
+        XTTS-v2 defaults: temperature=0.75, length_penalty=1.0,
         repetition_penalty=10.0, top_k=50, top_p=0.85, speed=1.0.
 
-          - temperature=0.50 (↓0.75): daha tutarli prosody, daha az 'dogaclama'.
-            Belgesel anlatim icin idealdir; tek konusmaci tonunu sabitler.
-          - repetition_penalty=10.0 (default): XTTS halusinasyon egilimine karsi
-            agresif. Default'u koruyoruz — kelime tekrari/takilmayi onler.
-          - length_penalty=1.0 (default): konusma suresine notr.
-          - top_k=50, top_p=0.85 (default): asiri sampling yok.
-          - speed=1.0: KRITIK. Once speed=1.15 + assembly'de atempo<=1.15 vardi,
-            ama bu CIFTE SIKISTIRMA — XTTS'in zaten %15 hizli/deforme sinyali
-            ustune ffmpeg phase-vocoder bininca ses metaliklesir. speed=1.0'a
-            geri donduk: dogal timbre korunur. Uzunluk sorunu artik (a) translator
-            uzunluk kelepcesi (concise EN), (b) _assemble_audio icindeki snowball
-            guard + emergency atempo ile cozuluyor — bu yapi yalnizca DESYNC
-            kritik oldugunda atempo'yu tetikler, normal segmentte hicbir
-            post-processing yok.
-          - enable_text_splitting=True: KRITIK. _consolidate_segments 6-14sn
-            mantiksal bloklar uretiyor, icinde 2-3 cumle olabiliyor. False iken
-            XTTS uzun multi-sentence metni tek pass'te isleyip cumlenin
-            ortasinda <eos> uretiyor (multi-sentence dropout) ve robotik
-            tonlama yapiyor. True iken XTTS'in kendi sentence splitter'i her
-            cumleyi ayri prompt olarak isleyip dogal pause ile birlestiriyor —
-            atlama ve robotluk hissi kaybolur.
+          - temperature=0.50 (↓0.75): more consistent prosody, less "improvisation".
+            Ideal for documentary-style narration; keeps the single-speaker tone stable.
+          - repetition_penalty=10.0 (default): aggressive defense against XTTS
+            hallucination tendencies. Keep the default — suppresses repeated /
+            stuck syllables.
+          - length_penalty=1.0 (default): neutral on duration.
+          - top_k=50, top_p=0.85 (default): no aggressive sampling.
+          - speed=1.0: CRITICAL. The earlier design used speed=1.15 plus
+            atempo<=1.15 in assembly, but this was DOUBLE COMPRESSION — XTTS'
+            already 15% accelerated / deformed signal followed by an ffmpeg
+            phase vocoder produced a metallic timbre. We reverted to speed=1.0:
+            natural timbre is preserved. Length is now controlled by
+            (a) the translator length constraint (concise EN) and
+            (b) the snowball-guard + emergency atempo inside ``_assemble_audio``
+            — which only activates when desync is critical. Normal segments
+            see zero post-processing.
+          - enable_text_splitting=True: CRITICAL. ``_consolidate_segments``
+            emits 6-14 s logical blocks containing 2-3 sentences. With this
+            flag False XTTS processes the multi-sentence text in a single
+            pass, emits <eos> mid-sentence (multi-sentence dropout) and the
+            delivery becomes robotic. With it True the XTTS internal sentence
+            splitter handles each sentence as its own prompt and stitches the
+            results with natural pauses — robotic / dropout artifacts disappear.
         """
         tts_model = self.synthesizer.xtts_model.synthesizer.tts_model
         output = tts_model.inference(
@@ -833,7 +1077,7 @@ class DubbingPipeline:
         sf.write(out_path, wav_np, self.XTTS_SR)
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 6: TIMELINE ASSEMBLY
+    # STAGE 6: TIMELINE ASSEMBLY
     # ═══════════════════════════════════════════════════════════
 
     @staticmethod
@@ -841,17 +1085,18 @@ class DubbingPipeline:
                        threshold_db: float = -40.0,
                        frame_ms: int = 20,
                        margin_ms: int = 20) -> np.ndarray:
-        """RMS-tabanli olu sessizlik (dead air) budama.
+        """RMS-based dead-air trimming.
 
-        Eski |amplitude|>0.01 yontemi XTTS noise floor'una yetersizdi (noise
-        ~-30dBFS, threshold ~-40dBFS); fonksiyon sessizligi gercekten budayamiyor,
-        atempo gereksiz tetikleniyordu. Yeni mantik:
-          - 20ms pencerelerde RMS hesapla, dB'ye cevir
-          - threshold_db'nin (default -40dBFS) ustundeki ilk/son pencereyi bul
-          - ±margin_ms (default 20ms) tampon birak (konusma basi kesilmesin)
+        The legacy ``|amplitude|>0.01`` approach was insufficient against the
+        XTTS noise floor (noise ~-30 dBFS, threshold ~-40 dBFS); the function
+        could not actually remove the silence and atempo would fire needlessly.
+        New logic:
+          - Compute RMS in 20 ms windows, convert to dB.
+          - Find the first / last window above ``threshold_db`` (default -40 dBFS).
+          - Keep a ±margin_ms (default 20 ms) buffer so utterance onsets are not clipped.
 
-        threshold_db = -40dBFS pratik: XTTS pure silence < -55dB, noise floor
-        ~-35dB, voiced > -20dB. -40dB ikisinin arasinda guvenli orta yol.
+        threshold_db = -40 dBFS in practice: XTTS pure silence < -55 dB,
+        noise floor ~-35 dB, voiced > -20 dB. -40 dB sits safely between them.
         """
         if data.size == 0:
             return data
@@ -864,7 +1109,7 @@ class DubbingPipeline:
         db = 20.0 * np.log10(rms + 1e-12)
         voiced = db > threshold_db
         if not voiced.any():
-            return data  # tamamen sessiz — capsule kararini yukariya birak
+            return data  # Fully silent — defer the decision to the caller.
         first_f = int(np.argmax(voiced))
         last_f = int(n_frames - np.argmax(voiced[::-1]))
         margin_frames = max(1, int((margin_ms / 1000.0) * sr / frame_len))
@@ -874,7 +1119,7 @@ class DubbingPipeline:
 
     @staticmethod
     def _fade_out(data: np.ndarray, sr: int, fade_ms: int = 80) -> np.ndarray:
-        """Sesin sonuna lineer fade-out uygular (sert kesim cıkkardamasin)."""
+        """Apply a linear fade-out to the tail (prevents an audible hard cut)."""
         if data.size == 0:
             return data
         fade_len = min(len(data), int((fade_ms / 1000.0) * sr))
@@ -887,23 +1132,24 @@ class DubbingPipeline:
     def _assemble_audio(self, segments: list, seg_wavs: list,
                         video_duration: float, out_path: str):
         """
-        Sentezlenen segmentleri orijinal zaman damgalarina yerlestir.
+        Place every synthesized segment back at its original timestamp.
 
-        Mimari kurallar (4 mühendislik notu):
-          1. XTTS olu sessizligini once bud (RMS-tabanli) → uzunluk dogru
-          2. Normalde atempo YOK (XTTS speed=1.0); ses olduğu gibi yerlesir
-          3. Cumleler arasi minimum 0.2sn nefes pay (corba onleme)
-          4. SNOWBALL GUARD: birikmis desync > 1.5sn ise acil sync devreye girer:
-             a) Nefes pay 0 (sigdir)
-             b) Emergency atempo (max ratio 1.25) — sadece bu durumda phase-vocoder kabul
-             c) Hala uzunsa fade-out ile sert kirp (videoya yetis)
+        Engineering rules (four design notes):
+          1. Trim XTTS dead air first (RMS-based) so duration math is honest.
+          2. Normally NO atempo (XTTS speed=1.0); the audio lands as is.
+          3. Enforce a 0.2 s minimum breathing gap between sentences (anti-clipping).
+          4. SNOWBALL GUARD: when accumulated desync > 1.5 s, emergency sync kicks in:
+             a) Zero breathing gap (force fit).
+             b) Emergency atempo (max ratio 1.25) — only here is the phase
+                vocoder accepted.
+             c) If still too long, hard-clip with a fade-out to match the video.
         """
         SR = self.XTTS_SR
-        BREATH_FRAMES = int(0.20 * SR)             # cumleler arasi min 200ms
-        MAX_DESYNC_SEC = 1.5                       # birikebilir maksimum kayma
+        BREATH_FRAMES = int(0.20 * SR)             # Minimum 200 ms between sentences.
+        MAX_DESYNC_SEC = 1.5                       # Maximum accumulated drift.
         MAX_DESYNC_FRAMES = int(MAX_DESYNC_SEC * SR)
-        EMERGENCY_RATIO_CAP = 1.25                 # acil durumda atempo'ya izin
-        # Tampon (mux sonda kirpiyor)
+        EMERGENCY_RATIO_CAP = 1.25                 # atempo ceiling in emergency mode.
+        # Output buffer (mux trims the trailing slack).
         max_overflow = max(5.0, video_duration * 0.20)
         total_frames = int((video_duration + max_overflow) * SR)
         output = np.zeros(total_frames, dtype=np.float32)
@@ -922,30 +1168,30 @@ class DubbingPipeline:
             if data.ndim > 1:
                 data = data[:, 0]
 
-            # 1) DEAD-AIR TRIM (RMS-tabanli) — uzunluk hesabi temizlensin.
+            # 1) DEAD-AIR TRIM (RMS-based) — clean up the duration math.
             data = self._trim_dead_air(data, SR)
 
-            # 4) DESYNC ALGI: onceki segment, bu segmentin orijinal baslangicini
-            # ne kadar gectiyse o kadar birikmis kayma var.
+            # 4) DESYNC DETECTION: by how much did the previous segment cross
+            # this segment's original start — i.e. accumulated drift.
             drift_frames = max(0, last_end_frame - orig_start_frame)
             emergency = drift_frames > MAX_DESYNC_FRAMES
 
-            # 2+4) Normal mod: hicbir post-processing YOK (XTTS speed=1.0 dogal).
-            #      Acil mod: emergency atempo (max 1.25) + hala uzunsa fade-out trim.
+            # 2+4) Normal mode: zero post-processing (XTTS speed=1.0 is natural).
+            #      Emergency mode: emergency atempo (max 1.25) + hard-trim + fade.
             if emergency:
                 eng_duration = len(data) / SR
                 if eng_duration > seg_duration * 1.05:
                     ratio = eng_duration / seg_duration
                     apply_ratio = min(ratio, EMERGENCY_RATIO_CAP)
                     data = self._atempo_stretch(data, SR, apply_ratio, wav_path)
-                    # Hala fazla uzunsa: sert trim + fade-out
+                    # Still too long? Hard-trim + fade-out.
                     eng_after = len(data) / SR
                     if eng_after > seg_duration * 1.20:
                         max_len = int(seg_duration * 1.15 * SR)
                         data = self._fade_out(data[:max_len], SR)
                 emergency_count += 1
 
-            # 3) NEFES PAYI: normalde 200ms; acil modda 0 (sigdir).
+            # 3) BREATHING GAP: 200 ms in normal mode; 0 in emergency mode (force fit).
             breath = 0 if emergency else (BREATH_FRAMES if last_end_frame > 0 else 0)
             min_start = last_end_frame + breath
             start_frame = max(orig_start_frame, min_start)
@@ -956,19 +1202,19 @@ class DubbingPipeline:
             last_end_frame = end_frame
 
         if emergency_count > 0:
-            print(f"[DUBBER] Snowball guard {emergency_count} kez devreye girdi "
-                  f"(desync > {MAX_DESYNC_SEC}sn).")
+            print(f"[DUBBER] Snowball guard engaged {emergency_count} time(s) "
+                  f"(desync > {MAX_DESYNC_SEC}s).")
 
-        # Sondaki bos kuyrugu kirp.
+        # Trim the trailing slack.
         output = output[:max(last_end_frame, int(video_duration * SR))]
         sf.write(out_path, output, SR)
 
     def _atempo_stretch(self, data: np.ndarray, sr: int, ratio: float,
                         orig_path: str) -> np.ndarray:
-        """ffmpeg atempo filtresi ile ses hizlandirir (ratio > 1.0)."""
+        """Speed up audio via the ffmpeg atempo filter (ratio > 1.0)."""
         tmp_out = orig_path.replace(".wav", "_tempo.wav")
 
-        # atempo max 2.0; daha yuksek icin zincirleme
+        # atempo accepts at most 2.0 — chain when the ratio exceeds 2.0.
         if ratio <= 2.0:
             af = f"atempo={ratio:.4f}"
         else:
@@ -985,16 +1231,18 @@ class DubbingPipeline:
             except OSError:
                 pass
             return result
-        return data  # Hata durumunda orijinali kullan
+        return data  # Fall back to the original audio on error.
 
     # ═══════════════════════════════════════════════════════════
-    # ADIM 7: VIDEO MUX
+    # STAGE 7: VIDEO MUX
     # ═══════════════════════════════════════════════════════════
 
     def _resample_mono(self, in_path: str, out_path: str, sr: int = 16000):
-        """WAV/audio dosyasini ffmpeg ile mono + hedef sample_rate'e cevirir.
-        Demucs ciktisi (vocals_hq, 44.1kHz stereo) -> Whisper girdisi
-        (16kHz mono) donusumunde kullanilir."""
+        """Convert a WAV / audio file to mono at the target sample rate via ffmpeg.
+
+        Used to bridge the Demucs output (vocals_hq, 44.1 kHz stereo) into the
+        Whisper input format (16 kHz mono).
+        """
         r = subprocess.run(
             ["ffmpeg", "-y", "-i", in_path,
              "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", out_path],
@@ -1002,30 +1250,30 @@ class DubbingPipeline:
         )
         if r.returncode != 0:
             raise RuntimeError(
-                f"ffmpeg resample hatasi:\n{r.stderr.decode(errors='replace')[:300]}"
+                f"ffmpeg resample failed:\n{r.stderr.decode(errors='replace')[:300]}"
             )
 
     def _mix_with_instrumental(self, video_path: str, dubbed_wav: str,
                                instrumental_path: str | None,
                                output_path: str):
-        """Final mix: dublaj sesi + (varsa) orijinal instrumental + video.
+        """Final mix: dubbed voice + (optional) original instrumental + video.
 
-        instrumental_path None ise: klasik mux (stream-copy, sadece dublaj sesi).
+        When instrumental_path is None: classic stream-copy mux (dubbed voice only).
 
-        instrumental_path varsa: ffmpeg sidechaincompress ile auto-ducking.
-        Konusma (dublaj) varken arka plan muzigi/SFX dinamik olarak kisilir;
-        konusma yokken eski seviyeye geri doner. Bu, kurumsal dublajda standart
-        teknik (broadcast / podcast post-production icin de ayni filtre).
+        When instrumental_path is present: ffmpeg ``sidechaincompress`` performs
+        auto-ducking. The background music / SFX is dynamically attenuated under
+        the dubbed dialogue and recovers between utterances — the standard
+        technique in enterprise dubbing and broadcast / podcast post-production.
 
-        Sidechain parametre secimi:
-          threshold=0.03   → konusma siddeti dustigunda bile ducking tetiklesin
-          ratio=20         → ducking agresif (-10..-15dB tipik)
-          attack=5ms       → konusmaya hizli tepki (kelime baslangici kisilsin)
-          release=300ms    → konusma sonu yumuşak yukseliş (ani patlama olmasin)
-          makeup=1         → ducked sinyalin kazanci nötr
+        Sidechain parameter choices:
+          threshold=0.03   → ducking still triggers on quieter dialogue.
+          ratio=20         → aggressive ducking (-10 to -15 dB typical).
+          attack=5 ms      → fast response (word onsets are ducked instantly).
+          release=300 ms   → smooth recovery after the dialogue ends (no popping).
+          makeup=1         → neutral makeup gain on the ducked signal.
         """
         if instrumental_path is None or not os.path.exists(instrumental_path):
-            # FALLBACK: klasik stream-copy mux (eski _mux davranisi).
+            # FALLBACK: classic stream-copy mux (legacy _mux behavior).
             r = subprocess.run(
                 ["ffmpeg", "-y",
                  "-i", video_path,
@@ -1039,15 +1287,16 @@ class DubbingPipeline:
             )
             if r.returncode != 0:
                 raise RuntimeError(
-                    f"ffmpeg mux hatasi:\n{r.stderr.decode(errors='replace')[:300]}"
+                    f"ffmpeg mux failed:\n{r.stderr.decode(errors='replace')[:300]}"
                 )
             return
 
-        # SIDECHAIN COMPRESSION + MIX + VIDEO MUX (tek ffmpeg cagrisi)
-        # Inputs: 0=video, 1=dubbed_voice, 2=instrumental
-        # Filter: voice ve bg ayni sample rate (24kHz, XTTS_SR) + stereo'ya cevrilir;
-        # bg (instrumental) voice'a duyarli sidechaincompress ile ducked;
-        # sonra ducked_bg + voice amix ile birlestirilir; sonuc tek stereo track.
+        # SIDECHAIN COMPRESSION + MIX + VIDEO MUX in a single ffmpeg call.
+        # Inputs: 0=video, 1=dubbed_voice, 2=instrumental.
+        # Filter graph: align voice and bg to the same sample rate (24 kHz, XTTS_SR)
+        # and to stereo; duck the instrumental ('bg') against the voice via
+        # sidechaincompress; mix voice + ducked_bg via amix into a single stereo
+        # track.
         sr = self.XTTS_SR
         filter_complex = (
             f"[1:a]aresample={sr},aformat=channel_layouts=stereo,"
@@ -1074,12 +1323,12 @@ class DubbingPipeline:
         )
         if r.returncode != 0:
             err = r.stderr.decode(errors='replace')[-500:]
-            print(f"[DUBBER] sidechain mix basarisiz, fallback mux deneniyor:\n{err}")
-            # FALLBACK: sidechain calismadi (eski ffmpeg / filter desteksiz)
+            print(f"[DUBBER] sidechain mix failed, retrying with fallback mux:\n{err}")
+            # FALLBACK: sidechain unsupported (older ffmpeg / missing filter).
             self._mix_with_instrumental(video_path, dubbed_wav, None, output_path)
 
     # ═══════════════════════════════════════════════════════════
-    # TEMIZLIK
+    # CLEANUP
     # ═══════════════════════════════════════════════════════════
 
     def _cleanup(self, paths: list):

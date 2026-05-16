@@ -1,21 +1,21 @@
 """
 gemma_echo/core/logger.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Merkezi Thread-Safe Loglama Mimarisi — Gemma Echo v8
+Centralized thread-safe logging architecture — Gemma Echo v8
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Kullanım (her modülde):
+Usage (in any module):
     from core.logger import get_logger
     log = get_logger(__name__)
 
-    log.info("Model yüklendi.")
-    log.warning("VRAM düşük!")
-    log.error("API hatası", exc_info=True)
-    log.critical("Sistem çöktü!", exc_info=True)
+    log.info("Model loaded.")
+    log.warning("VRAM is low!")
+    log.error("API failure", exc_info=True)
+    log.critical("System crash!", exc_info=True)
 
-Çıktılar:
-  • Terminal  → Renkli, okunabilir format
-  • Dosya     → gemma_echo.log (10MB x 5 rotasyon, zaman + thread + konum)
+Outputs:
+  • Terminal  → Colorized, human-readable format
+  • File      → gemma_echo.log (10 MB × 5 rotation; timestamp + thread + caller)
 """
 
 import logging
@@ -23,17 +23,17 @@ import logging.handlers
 import os
 import threading
 
-# ─── Sabitler ────────────────────────────────────────────────────────────────
+# ─── Constants ───────────────────────────────────────────────────────────────
 
-# Log dosyasının konumu: projenin kökü (main.py'nin yanı)
+# Log file lives at the project root (next to main.py).
 _LOG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_FILE = os.path.join(_LOG_DIR, "gemma_echo.log")
 
-# Rotasyon: her dosya max 10 MB, en fazla 5 yedek
+# Rotation policy: 10 MB per file, up to 5 backups retained.
 MAX_BYTES = 10 * 1024 * 1024   # 10 MB
 BACKUP_COUNT = 5
 
-# ─── ANSI Renk Kodları (terminal için) ───────────────────────────────────────
+# ─── ANSI color codes (terminal handler) ─────────────────────────────────────
 
 _RESET  = "\033[0m"
 _BOLD   = "\033[1m"
@@ -41,18 +41,18 @@ _DIM    = "\033[2m"
 
 _COLORS = {
     "DEBUG"    : "\033[36m",    # Cyan
-    "INFO"     : "\033[32m",    # Yeşil
-    "WARNING"  : "\033[33m",    # Sarı
-    "ERROR"    : "\033[31m",    # Kırmızı
-    "CRITICAL" : "\033[35m",    # Magenta (kalın)
+    "INFO"     : "\033[32m",    # Green
+    "WARNING"  : "\033[33m",    # Yellow
+    "ERROR"    : "\033[31m",    # Red
+    "CRITICAL" : "\033[35m",    # Magenta (bold)
 }
 
-# ─── Özel Formatter: Renkli Terminal ─────────────────────────────────────────
+# ─── Custom formatter: colorized console ─────────────────────────────────────
 
 class _ColoredConsoleFormatter(logging.Formatter):
     """
-    Terminal çıktısını renklendirir.
-    Format: [HH:MM:SS] [LEVEL] [ThreadName] mesaj  (file:satır)
+    Colorizes log records for terminal output.
+    Format: [HH:MM:SS] [LEVEL] [ThreadName] message  (file:line)
     """
     _FMT = (
         "{dim}[%(asctime)s]{reset} "
@@ -72,12 +72,12 @@ class _ColoredConsoleFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-# ─── Özel Formatter: Dosya (renksiz, tam bilgi) ───────────────────────────────
+# ─── Custom formatter: file (plain text, full detail) ────────────────────────
 
 class _FileFormatter(logging.Formatter):
     """
-    Log dosyasına düz metin yazar — grep/analiz için temiz.
-    Format: 2026-05-09 23:15:01,234 | ERROR    | STT-Thread | translator.py:203 | mesaj
+    Writes plain-text log entries to disk — optimized for grep / log analysis.
+    Format: 2026-05-09 23:15:01,234 | ERROR    | STT-Thread | translator.py:203 | message
     """
     _FMT = (
         "%(asctime)s | %(levelname)-8s | %(threadName)-20s | "
@@ -88,7 +88,7 @@ class _FileFormatter(logging.Formatter):
         super().__init__(fmt=self._FMT, datefmt="%Y-%m-%d %H:%M:%S")
 
 
-# ─── Merkezi Setup (bir kez çağrılır) ────────────────────────────────────────
+# ─── Centralized setup (invoked exactly once) ────────────────────────────────
 
 _setup_lock = threading.Lock()
 _is_configured = False
@@ -96,12 +96,12 @@ _is_configured = False
 
 def setup_logging(level: int = logging.DEBUG) -> None:
     """
-    Loglama sistemini başlatır. main.py içinde uygulama açılırken BİR KEZ çağrılır.
-    İkinci çağrı sessizce yok sayılır (idempotent).
+    Initialize the logging subsystem. Called exactly once from main.py during
+    application bootstrap; subsequent calls are silently no-op (idempotent).
 
     Args:
-        level: Kök logger seviyesi. Varsayılan DEBUG (her şeyi yakala).
-               Production'da logging.INFO kullanılabilir.
+        level: Root logger level. Defaults to DEBUG (capture everything).
+               Production deployments may prefer logging.INFO.
     """
     global _is_configured
     with _setup_lock:
@@ -111,12 +111,12 @@ def setup_logging(level: int = logging.DEBUG) -> None:
         root_logger = logging.getLogger()
         root_logger.setLevel(level)
 
-        # ── Handler 1: Renkli Terminal ────────────────────────────────────
+        # ── Handler 1: colorized console ─────────────────────────────────
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)      # Terminalde INFO+ göster
+        console_handler.setLevel(logging.INFO)      # Console shows INFO and above.
         console_handler.setFormatter(_ColoredConsoleFormatter())
 
-        # ── Handler 2: Rotasyonlu Dosya ───────────────────────────────────
+        # ── Handler 2: rotating file ─────────────────────────────────────
         try:
             file_handler = logging.handlers.RotatingFileHandler(
                 filename=LOG_FILE,
@@ -125,28 +125,28 @@ def setup_logging(level: int = logging.DEBUG) -> None:
                 encoding="utf-8",
                 delay=False,
             )
-            file_handler.setLevel(logging.DEBUG)    # Dosyada DEBUG+ kaydet
+            file_handler.setLevel(logging.DEBUG)    # File captures DEBUG and above.
             file_handler.setFormatter(_FileFormatter())
         except OSError as e:
-            # Log dizini yazılabilir değilse devam et ama uyar
+            # Log directory is not writable — continue with console only and emit a warning.
             console_handler.emit(
                 logging.LogRecord(
                     name="core.logger", level=logging.ERROR,
                     pathname=__file__, lineno=0,
-                    msg=f"[LOGGER] Log dosyası oluşturulamadı: {e}",
+                    msg=f"[LOGGER] Failed to create log file: {e}",
                     args=(), exc_info=None
                 )
             )
             file_handler = None
 
-        # ── Mevcut handler'ları temizle, yenileri ekle ───────────────────
+        # ── Reset any pre-existing handlers and register ours ────────────
         root_logger.handlers.clear()
         root_logger.addHandler(console_handler)
         if file_handler:
             root_logger.addHandler(file_handler)
 
-        # ── Gürültülü kütüphane loglarını sustur ─────────────────────────
-        # llama-cpp, TTS ve httpx çok fazla DEBUG mesajı üretir
+        # ── Silence noisy third-party loggers ─────────────────────────────
+        # llama-cpp, TTS and httpx emit excessive DEBUG output.
         for noisy_lib in ("llama_cpp", "TTS", "httpx", "urllib3", "httpcore",
                           "pdfminer", "pdfplumber"):
             logging.getLogger(noisy_lib).setLevel(logging.WARNING)
@@ -155,20 +155,20 @@ def setup_logging(level: int = logging.DEBUG) -> None:
 
         logger = logging.getLogger("core.logger")
         logger.info(
-            "━━━ Gemma Echo Loglama Başlatıldı ━━━  "
-            f"Dosya → {LOG_FILE}"
+            "━━━ Gemma Echo Logging Initialized ━━━  "
+            f"File → {LOG_FILE}"
         )
 
 
 def get_logger(name: str) -> logging.Logger:
     """
-    Modül için adlandırılmış logger döner.
+    Return a module-scoped named logger.
 
-    Kullanım:
+    Usage:
         log = get_logger(__name__)
 
-    setup_logging() henüz çağrılmadıysa otomatik başlatır
-    (geliştirme ve test ortamları için güvenli).
+    If ``setup_logging()`` has not been invoked yet, this function transparently
+    bootstraps it — a defensive convenience for development and test contexts.
     """
     if not _is_configured:
         setup_logging()

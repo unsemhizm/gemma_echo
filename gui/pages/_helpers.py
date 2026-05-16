@@ -1,11 +1,11 @@
 """
-Gemma Echo — Ortak Arayüz Yardımcıları (UI Helpers)
+Gemma Echo — Shared UI helpers.
 """
 
 import customtkinter as ctk
 from gui.i18n import t
 
-# ── Premium Renk Paleti ────────────────────────────────────────────────────────
+# ── Premium color palette ─────────────────────────────────────────────────────
 _C = {
     "bg":       "#0b0b12",
     "sidebar":  "#0d0d18",
@@ -40,7 +40,7 @@ def _header(parent, title: str, subtitle: str):
     ).pack(anchor="w")
 
 def _card(parent, title: str) -> ctk.CTkFrame:
-    """Baslikli, kenarlıklı kart — ic frame dondurur."""
+    """Bordered card with a title — returns the inner content frame."""
     outer = ctk.CTkFrame(
         parent, fg_color=_C["surface"],
         corner_radius=14, border_width=1, border_color=_C["border"]
@@ -69,9 +69,9 @@ def _section_lbl(parent, text: str):
     )
 
 class _InfoIcon(ctk.CTkButton):
-    """Hover'da aciklama balonu gosteren [?] ikonu."""
+    """[?] icon that displays a description tooltip on hover."""
 
-    _active = None  # Tum ornekler arasinda tek aktif tooltip
+    _active = None  # Single active tooltip across all instances.
 
     def __init__(self, parent, tooltip_text: str, **kwargs):
         super().__init__(
@@ -143,14 +143,14 @@ class _InfoIcon(ctk.CTkButton):
             _InfoIcon._active = None
 
 
-# ── Toast Bildirim Widget'ı ───────────────────────────────────────────────────
+# ── Toast notification widget ─────────────────────────────────────────────────
 class _Toast(ctk.CTkToplevel):
-    """Sağ üst köşede otomatik kapanan bildirim kutusu.
+    """Auto-dismissing notification anchored to the top-right corner.
 
-    - Stack: birden fazla toast üst üste yığılır.
-    - Auto-close: duration_ms sonra kapanır (default 4.5sn).
-    - Click-to-dismiss: toast'a veya X'e tıklayınca kapanır.
-    - level: 'info' | 'success' | 'warning' | 'error' — renk şeması seçer.
+    - Stacking: multiple toasts stack vertically.
+    - Auto-close: dismisses after ``duration_ms`` (default 4.5 s).
+    - Click-to-dismiss: clicking the toast or the ✕ button closes it.
+    - level: 'info' | 'success' | 'warning' | 'error' — selects the color scheme.
     """
 
     _stack: list = []
@@ -203,12 +203,12 @@ class _Toast(ctk.CTkToplevel):
             command=self._close, corner_radius=11
         ).pack(side="right", padx=(4, 8), pady=10)
 
-        # Tıklamayla kapanma — toast üzerindeki tüm boş alanlar
+        # Click-to-dismiss across all empty areas of the toast.
         for w in (self, frm):
             w.bind("<Button-1>", lambda e: self._close())
 
         _Toast._stack.append(self)
-        # Geometriyi after ile kur — widget'ın gerçek boyutu hesaplandıktan sonra
+        # Defer geometry to ``after()`` so the widget's actual size is known.
         self.after(10, self._reposition_all)
         self._auto_close_id = self.after(duration_ms, self._close)
 
@@ -253,7 +253,7 @@ class _Toast(ctk.CTkToplevel):
 
 def _show_toast(parent, message: str, level: str = "info",
                 duration_ms: int = 4500) -> _Toast:
-    """Sağ üst köşede toast bildirim göster.
+    """Show a toast notification in the top-right corner.
 
     level: 'info' | 'success' | 'warning' | 'error'
     """

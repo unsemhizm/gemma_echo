@@ -12,33 +12,35 @@ import numpy as np
 
 class Recorder:
     """
-    VAD tabanli gercek zamanli mikrofon kaydedici.
-    webrtcvad ile konusma algilama, sounddevice ile ses yakalama.
+    VAD-driven real-time microphone capture.
 
-    Producer-Consumer Mimarisi:
-      Producer (mikrofon): 16kHz mono ses akisini 30ms cerceveler halinde okur,
-        VAD ile cumle bitisini algilayinca benzersiz isimli WAV yazar ve
-        audio_queue'ya atar. Mikrofon hic kapanmaz.
-      Consumer (islem thread): Kuyruktan WAV alir, orchestrator.process()
-        cagirip dosyayi temizler. Producer ile paralel calisir.
+    Uses webrtcvad for voice activity detection and sounddevice for audio I/O.
+
+    Producer-Consumer architecture:
+      Producer (microphone): continuously reads the 16 kHz mono input stream in
+        30 ms frames, applies VAD to detect end-of-utterance, then writes a
+        uniquely named WAV file and enqueues it. The microphone is never closed.
+      Consumer (processing thread): pulls a WAV off the queue, runs the
+        orchestrator.process() pipeline, and deletes the file. Runs in parallel
+        with the producer.
     """
 
     SAMPLE_RATE = 16000
-    FRAME_DURATION_MS = 30  # webrtcvad: 10, 20 veya 30ms destekler
+    FRAME_DURATION_MS = 30  # webrtcvad supports 10, 20 or 30 ms frames.
 
     def __init__(self, orchestrator, aggressiveness=None, transcriber=None, config=None, device=None):
         """
         Args:
-            orchestrator: Orchestrator ornegi — process() metodu cagrilir.
-            aggressiveness: webrtcvad gurultu direnci (0=dusuk, 3=yuksek).
-                            2: dengeli; gurultulu ortam icin 3 tercih edilir.
+            orchestrator: Orchestrator instance whose process() method is invoked.
+            aggressiveness: webrtcvad noise tolerance (0 = low, 3 = high).
+                            2 is balanced; noisy environments may prefer 3.
         """
         self.orchestrator = orchestrator
         self.transcriber = transcriber
         self.config = config
-        self.device = device  # None = varsayilan mikrofon, int = loopback device index
-        
-        # Ayarlari config'den veya parametreden oku
+        self.device = device  # None = default microphone; int = loopback device index.
+
+        # Read settings from config when not supplied via constructor arguments.
         vad_aggr = aggressiveness
         if vad_aggr is None and config:
             vad_aggr = config.get("recording", "vad_aggressiveness", default=2)
@@ -48,10 +50,10 @@ class Recorder:
         if config:
             self.streaming_enabled = config.get("recording", "streaming_enabled", default=True)
 
-        # Kare boyutu: 30ms * 16000Hz / 1000 = 480 ornek (int16 -> 960 byte)
+        # Frame size: 30 ms * 16000 Hz / 1000 = 480 samples (int16 → 960 bytes).
         self.frame_size = int(self.SAMPLE_RATE * self.FRAME_DURATION_MS / 1000)
 
-        # Sessizlik esikleri (kare cinsinden)
+        # Silence thresholds (expressed in frames).
         silence_ms = 900
         if config:
             silence_ms = config.get("recording", "silence_ms", default=900)
@@ -68,48 +70,48 @@ class Recorder:
             self.vad_enabled = config.get("recording", "vad_enabled", default=True)
             self.hotkey_outbound = config.get("inbound", "hotkey_outbound", default="space")
 
-        # On-tetik tamponu: 300ms (10 kare) — yalanci tetiklemeleri onler
+        # Pre-trigger buffer: 300 ms (10 frames) — suppresses false-positive triggers.
         self._pre_trigger_size = 10
 
         self.vad = webrtcvad.Vad(self.aggressiveness)
 
-        # GUI "Durdur" butonu bu event'i set eder
+        # The GUI "Stop" button raises this event.
         self._stop_event = threading.Event()
 
-        # Asenkron islem kuyrugu (maks 10 eleman — RAM tasmasini onler)
+        # Async work queue (capped at 10 to avoid unbounded RAM growth).
         self.audio_queue = queue.Queue(maxsize=10)
 
-        # Gecici WAV dizini (her kayit benzersiz isim alir)
+        # Temp directory for the recorded WAV files (each gets a unique name).
         _project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._tmp_dir = os.path.join(_project_dir, ".tmp_audio")
         os.makedirs(self._tmp_dir, exist_ok=True)
 
     # ═══════════════════════════════════════════════════════════
-    # ANA DINLEME DONGUSU
+    # PRIMARY LISTENING LOOP
     # ═══════════════════════════════════════════════════════════
 
     def run(self):
         """
-        Producer-Consumer dinleme dongusu. Ctrl+C ile durdurulur.
+        Producer-Consumer listening loop. Stopped with Ctrl+C.
 
-        Producer (bu metod): Mikrofonu hic kapamadan dinler, cumle bitince
-          WAV'i kuyruga atar.
-        Consumer (_consumer thread): Kuyruktan WAV ceker, STT->LLM->TTS
-          hattini calistirip dosyayi temizler. Paralel calisir.
+        Producer (this method): never closes the microphone; enqueues a WAV
+          file every time an utterance terminates.
+        Consumer (_consumer thread): dequeues WAVs, runs the STT → LLM → TTS
+          pipeline and deletes the file. Operates in parallel with the producer.
         """
         print("\n" + "=" * 50)
-        print("[RECORDER] CANLI MIKROFON MODU BASLATILDI")
-        print(f"[RECORDER] VAD aggressiveness={self.aggressiveness} | Sessizlik esigi=900ms")
-        print("[RECORDER] Konusmaya baslayin. Cikis: Ctrl+C")
+        print("[RECORDER] LIVE MICROPHONE MODE ACTIVE")
+        print(f"[RECORDER] VAD aggressiveness={self.aggressiveness} | silence threshold=900 ms")
+        print("[RECORDER] Start speaking. Exit: Ctrl+C")
         print("=" * 50 + "\n")
 
-        # Consumer thread'i baslat (daemon: Ctrl+C'de ana program kapaninca o da kapanir)
+        # Start the consumer thread (daemon: terminates with the main program on Ctrl+C).
         threading.Thread(target=self._consumer, daemon=True).start()
 
         pre_trigger_buf = collections.deque(maxlen=self._pre_trigger_size)
-        voiced_frames = []   # Kaydedilen ses kareleri
-        triggered = False    # Kayit aktif mi?
-        silent_count = 0     # Arka arkaya sessiz kare sayisi
+        voiced_frames = []   # Frames being accumulated into the current utterance.
+        triggered = False    # Is recording currently active?
+        silent_count = 0     # Consecutive silent frames.
 
         try:
             stream_kwargs = dict(
@@ -126,7 +128,7 @@ class Recorder:
                 while not self._stop_event.is_set():
                     raw, overflowed = stream.read(self.frame_size)
                     if overflowed:
-                        print("[UYARI] Ses tamponu tasti.")
+                        print("[WARN] Audio buffer overflow.")
 
                     frame_bytes = bytes(raw)
                     if self.vad_enabled:
@@ -139,47 +141,47 @@ class Recorder:
                             is_speech = False
 
                     if not triggered:
-                        # ── ON-TAMPON: tetiklenme bekleniyor ──────────
+                        # ── PRE-BUFFER: awaiting trigger ──────────────
                         pre_trigger_buf.append((frame_bytes, is_speech))
                         voiced_in_buf = sum(1 for _, s in pre_trigger_buf if s)
 
-                        # On-tamponda %80'den fazla konusma varsa tetikle
+                        # Trigger once >80% of the pre-buffer is voiced.
                         if voiced_in_buf > 0.8 * pre_trigger_buf.maxlen:
                             triggered = True
                             silent_count = 0
-                            # On-tampondaki kareleri kayda dahil et (cumle baslangicini kesmemek icin)
+                            # Carry the pre-buffer into the recording so we do not clip the onset.
                             voiced_frames = [f for f, _ in pre_trigger_buf]
                             pre_trigger_buf.clear()
-                            print("[RECORDER] Konusma algilandi, kaydediliyor...")
+                            print("[RECORDER] Speech detected — recording...")
 
                     else:
-                        # ── KAYIT: sessizlik sayaci ───────────────────
+                        # ── RECORDING: silence counter ────────────────
                         voiced_frames.append(frame_bytes)
 
                         if is_speech:
                             silent_count = 0
-                            
-                            # ── 0-A: STREAMING CHUNKER (Noktalama Bazli) ──
-                            # Her 15 karede bir (450ms) hizli kontrol et
+
+                            # ── 0-A: STREAMING CHUNKER (punctuation-aware) ──
+                            # Every 15 frames (~450 ms) run a quick check.
                             if self.streaming_enabled and self.transcriber and len(voiced_frames) % 15 == 0:
-                                # Mevcut birikimi gecici WAV'a yaz
+                                # Materialize the running buffer to a temporary WAV.
                                 tmp_wav = self._write_wav(voiced_frames, suffix="_partial")
                                 partial_text = self._quick_transcribe(tmp_wav)
-                                
+
                                 if self._ends_with_punctuation(partial_text):
-                                    print(f"[STREAMING] Noktalama algilandi: '{partial_text}'")
+                                    print(f"[STREAMING] Punctuation detected: '{partial_text}'")
                                     try:
                                         self.audio_queue.put_nowait(tmp_wav)
                                         voiced_frames = []
-                                        # triggered = True kalmaya devam eder, yeni cumle baslar
+                                        # Keep ``triggered`` True — the next sentence starts immediately.
                                     except queue.Full:
-                                        print("[UYARI] Streaming: Kuyruk dolu, noktalama chunk atlandi.")
+                                        print("[WARN] Streaming: queue full — punctuation chunk skipped.")
                                         try:
                                             os.remove(tmp_wav)
                                         except OSError:
                                             pass
                                 else:
-                                    # Noktalama yoksa gecici dosyayi sil
+                                    # No punctuation yet — discard the temp file.
                                     try:
                                         os.remove(tmp_wav)
                                     except OSError:
@@ -187,15 +189,16 @@ class Recorder:
                         else:
                             silent_count += 1
 
-                        # ── 0-B: DINAMIK ESIK (Cumle vs Paragraf) ─────
-                        # Sessizlik esigi asildiginda kaydi sonlandir
+                        # ── 0-B: DYNAMIC THRESHOLD (sentence vs paragraph) ─────
+                        # Terminate the recording once the silence threshold is crossed.
                         threshold = self._silence_threshold
                         if self.streaming_enabled:
-                            # Streaming aktifse sessizlik esigi daha agresif (kisa) olabilir
-                            # Cunku noktalama gelmezse bile 900ms beklemek cok uzun.
-                            # Ama burada paragraf modunu desteklemek icin para_threshold kullanalim.
+                            # While streaming is enabled, a slightly more aggressive
+                            # (shorter) silence threshold could apply, but here we
+                            # use the paragraph threshold so multi-sentence flows
+                            # remain supported.
                             threshold = self._para_threshold
-                        
+
                         if silent_count >= threshold:
                             triggered = False
                             silent_count = 0
@@ -204,9 +207,9 @@ class Recorder:
                                 wav_path = self._write_wav(voiced_frames)
                                 try:
                                     self.audio_queue.put_nowait(wav_path)
-                                    print(f"[RECORDER] Final flush: {self.audio_queue.qsize()} bekleyen.")
+                                    print(f"[RECORDER] Final flush: {self.audio_queue.qsize()} pending.")
                                 except queue.Full:
-                                    print("[UYARI] Kuyruk dolu! Atlandi.")
+                                    print("[WARN] Queue full — skipped.")
                                     try:
                                         os.remove(wav_path)
                                     except OSError:
@@ -216,10 +219,10 @@ class Recorder:
                             pre_trigger_buf.clear()
 
         except KeyboardInterrupt:
-            print("\n[RECORDER] Dinleme durduruldu.")
+            print("\n[RECORDER] Listening stopped.")
 
     def stop(self):
-        """Kaydı durdurur ve bekleyen işleri temizler."""
+        """Stop the recorder and drain any pending work items."""
         self._stop_event.set()
         while not self.audio_queue.empty():
             try:
@@ -234,19 +237,21 @@ class Recorder:
 
 
     # ═══════════════════════════════════════════════════════════
-    # CONSUMER: ASENKRON ISLEM THREAD'I
+    # CONSUMER: ASYNC PROCESSING THREAD
     # ═══════════════════════════════════════════════════════════
 
     def _consumer(self):
-        """Kuyruktan WAV alir, orchestrator.process() cagirip dosyayi siler.
-        Producer ile tam paralel calisir — mikrofon hic kapanmaz.
-        Hata olsa bile thread olmez; dongu devam eder."""
+        """Pull a WAV off the queue, run orchestrator.process(), delete the file.
+
+        Runs fully in parallel with the producer — the microphone never closes.
+        The loop is exception-tolerant: a thrown error never kills the thread.
+        """
         while True:
             wav_path = self.audio_queue.get()
             try:
                 self.orchestrator.process(wav_path)
             except Exception as e:
-                print(f"[HATA] Consumer thread islem hatasi (Atlatildi): {e}")
+                print(f"[ERROR] Consumer thread processing error (recovered): {e}")
             finally:
                 try:
                     os.remove(wav_path)
@@ -255,56 +260,59 @@ class Recorder:
                 self.audio_queue.task_done()
 
     # ═══════════════════════════════════════════════════════════
-    # YARDIMCI: WAV YAZICI
+    # UTILITY: WAV WRITER
     # ═══════════════════════════════════════════════════════════
 
     def _write_wav(self, frames: list, suffix: str = "") -> str:
-        """Ses karelerini 16kHz mono WAV olarak benzersiz isimle yazar.
-        RMS normalizasyon ile ses seviyesini dengeler (fisiltili/yuksek ses ortami)."""
+        """Write the supplied frames to a 16 kHz mono WAV under a unique name.
+
+        Applies RMS-based gain normalization so quiet whispers and shouted speech
+        end up at comparable levels for the STT model.
+        """
         ts = int(time.time() * 1000); filename = f"rec_{ts}{suffix}.wav"
         wav_path = os.path.join(self._tmp_dir, filename)
         audio_bytes = b"".join(frames)
 
-        # ── RMS Normalizasyon ─────────────────────────────────────
-        # Ham sesi float'a cevir, RMS ol, hedef seviyeye cek, kırp
+        # ── RMS normalization ─────────────────────────────────────
+        # Convert raw int16 to float, compute RMS, scale to the target level, clip.
         samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
         rms = np.sqrt(np.mean(samples ** 2))
-        if rms > 50:   # gercek ses var (saf gurultu/sessizlik degil)
-            gain = min(3000.0 / rms, 10.0)   # hedef RMS=3000, max 10x kazanim
+        if rms > 50:   # Real speech (not pure silence / noise).
+            gain = min(3000.0 / rms, 10.0)   # Target RMS=3000, max 10x gain.
             samples = np.clip(samples * gain, -32767, 32767)
         audio_bytes = samples.astype(np.int16).tobytes()
         # ─────────────────────────────────────────────────────────
 
         with wave.open(wav_path, "wb") as wf:
             wf.setnchannels(1)
-            wf.setsampwidth(2)   # int16 = 2 byte
+            wf.setsampwidth(2)   # int16 = 2 bytes per sample.
             wf.setframerate(self.SAMPLE_RATE)
             wf.writeframes(audio_bytes)
         return wav_path
 
     # ===========================================================
-    # YARDIMCI: STREAMING & DOSYA ISLEMLERI
+    # UTILITY: STREAMING & FILE HELPERS
     # ===========================================================
 
     def _quick_transcribe(self, wav_path: str) -> str:
-        """Streaming icin hizli, dusuk kaliteli transkripsiyon."""
+        """Fast / low-quality transcription used during the streaming chunker."""
         if not self.transcriber:
             return ""
-        
+
         try:
-            # Beam size 1: En hizli sonuc (kalite ikincil)
+            # beam_size=1: fastest result (quality is secondary here).
             src_lang = "tr"
             if self.config:
                 src_lang = self.config.get("language", "source", default="tr")
-                
+
             res = self.transcriber._transcribe_local(wav_path, source_lang=src_lang)
             return res.get("text", "").strip()
         except Exception as e:
-            print(f"[UYARI] Quick transcribe hatasi: {e}")
+            print(f"[WARN] Quick transcribe error: {e}")
             return ""
 
     def _ends_with_punctuation(self, text: str) -> bool:
-        """Metin nokta, soru isareti veya unlem ile bitiyor mu?"""
+        """Return True when the text ends with '.', '?' or '!'."""
         if not text:
             return False
         clean = text.strip()
@@ -314,32 +322,35 @@ class Recorder:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOOPBACK RECORDER — soundcard ile WASAPI Loopback
+# LOOPBACK RECORDER — soundcard-based WASAPI loopback
 # ══════════════════════════════════════════════════════════════════════════════
 
 class LoopbackRecorder:
     """
-    WASAPI Loopback kaydedici — karsı tarafin sesini (Zoom/Meet cikisi) yakalar.
-    soundcard kutuphanesini kullanir; sounddevice ile ayni VAD + kuyruk mimarisi.
+    WASAPI-loopback recorder — captures the counterpart's audio (e.g., the
+    Zoom / Meet output stream).
 
-    Kullanim:
+    Uses the soundcard library; shares the VAD + queue architecture with the
+    sounddevice-based Recorder.
+
+    Usage:
         recorder = LoopbackRecorder(orchestrator, config=cfg)
         threading.Thread(target=recorder.run, daemon=True).start()
-        # durdurmak icin:
+        # to stop:
         recorder._stop_event.set()
     """
 
     SAMPLE_RATE       = 16000
     FRAME_DURATION_MS = 30
-    BLOCKSIZE         = 4800   # ~300ms
+    BLOCKSIZE         = 4800   # ~300 ms
 
     def __init__(self, orchestrator, config=None, aggressiveness=None, device_name: str = None):
         """
         Args:
-            orchestrator  : process() metodu cagrilacak nesne.
-            config        : ConfigManager — ayarlar buradan okunur.
-            aggressiveness: webrtcvad gurultu direnci (0-3).
-            device_name   : Loopback cihaz adi (None = ilk bulunan loopback).
+            orchestrator  : Object whose process() method will be invoked.
+            config        : ConfigManager — supplies runtime settings.
+            aggressiveness: webrtcvad noise tolerance (0-3).
+            device_name   : Loopback device name (None = first available loopback device).
         """
         self.orchestrator = orchestrator
         self.config       = config
@@ -372,20 +383,20 @@ class LoopbackRecorder:
         self._tmp_dir = os.path.join(_project_dir, ".tmp_audio")
         os.makedirs(self._tmp_dir, exist_ok=True)
 
-    # ── Ana Dongu ─────────────────────────────────────────────────────────────
+    # ── Primary loop ─────────────────────────────────────────────────────────
 
     def run(self):
-        """WASAPI Loopback'ten ses yakala, VAD ile cumle algilayinca kuyruga at."""
+        """Capture audio from the WASAPI loopback and enqueue each detected utterance."""
         try:
             import soundcard as sc
         except ImportError:
-            print("[LOOPBACK] HATA: 'soundcard' kutuphanesi bulunamadi. 'pip install soundcard' calistir.")
+            print("[LOOPBACK] ERROR: 'soundcard' library missing. Run 'pip install soundcard'.")
             return
 
-        # Loopback cihazi bul
+        # Locate a loopback device.
         loopback_mics = [m for m in sc.all_microphones(include_loopback=True) if m.isloopback]
         if not loopback_mics:
-            print("[LOOPBACK] HATA: Hicbir WASAPI Loopback cihazi bulunamadi.")
+            print("[LOOPBACK] ERROR: no WASAPI loopback device available.")
             return
 
         device = loopback_mics[0]
@@ -394,8 +405,8 @@ class LoopbackRecorder:
             if matches:
                 device = matches[0]
 
-        print(f"\n[LOOPBACK] Cihaz: {device.name}")
-        print("[LOOPBACK] Karsi taraf dinleniyor. Ctrl+C ile dur.")
+        print(f"\n[LOOPBACK] Device: {device.name}")
+        print("[LOOPBACK] Listening to counterpart audio. Stop with Ctrl+C.")
 
         threading.Thread(target=self._consumer, daemon=True).start()
 
@@ -408,7 +419,7 @@ class LoopbackRecorder:
             with device.recorder(samplerate=self.SAMPLE_RATE, channels=1,
                                   blocksize=self.BLOCKSIZE) as rec:
                 while not self._stop_event.is_set():
-                    # soundcard float32 dondurur → int16'ya cevir
+                    # soundcard returns float32 → convert to int16.
                     data       = rec.record(numframes=self._frame_size)
                     samples_f  = data[:, 0] if data.ndim > 1 else data
                     samples_i  = np.clip(samples_f * 32767, -32768, 32767).astype(np.int16)
@@ -431,7 +442,7 @@ class LoopbackRecorder:
                             silent_count = 0
                             voiced_frames = [f for f, _ in pre_trigger_buf]
                             pre_trigger_buf.clear()
-                            print("[LOOPBACK] Konusma algilandi...")
+                            print("[LOOPBACK] Speech detected...")
                     else:
                         voiced_frames.append(frame_bytes)
                         if is_speech:
@@ -447,7 +458,7 @@ class LoopbackRecorder:
                                 try:
                                     self.audio_queue.put_nowait(wav_path)
                                 except queue.Full:
-                                    print("[LOOPBACK] Kuyruk dolu, atlandi.")
+                                    print("[LOOPBACK] Queue full — skipped.")
                                     try:
                                         os.remove(wav_path)
                                     except OSError:
@@ -456,12 +467,12 @@ class LoopbackRecorder:
                             pre_trigger_buf.clear()
 
         except KeyboardInterrupt:
-            print("\n[LOOPBACK] Durduruldu.")
+            print("\n[LOOPBACK] Stopped.")
         except Exception as e:
-            print(f"[LOOPBACK] Hata: {e}")
+            print(f"[LOOPBACK] Error: {e}")
 
     def stop(self):
-        """Kaydı durdurur ve bekleyen işleri temizler."""
+        """Stop the recorder and drain any pending work items."""
         self._stop_event.set()
         while not self.audio_queue.empty():
             try:
@@ -474,7 +485,7 @@ class LoopbackRecorder:
             except:
                 pass
 
-    # ── Consumer ─────────────────────────────────────────────────────────────
+    # ── Consumer ────────────────────────────────────────────────────────────
 
     def _consumer(self):
         while True:
@@ -482,7 +493,7 @@ class LoopbackRecorder:
             try:
                 self.orchestrator.process(wav_path)
             except Exception as e:
-                print(f"[LOOPBACK] Consumer hatasi: {e}")
+                print(f"[LOOPBACK] Consumer error: {e}")
             finally:
                 try:
                     os.remove(wav_path)
@@ -490,7 +501,7 @@ class LoopbackRecorder:
                     pass
                 self.audio_queue.task_done()
 
-    # ── WAV Yazici ────────────────────────────────────────────────────────────
+    # ── WAV writer ──────────────────────────────────────────────────────────
 
     def _write_wav(self, frames: list) -> str:
         ts        = int(time.time() * 1000)

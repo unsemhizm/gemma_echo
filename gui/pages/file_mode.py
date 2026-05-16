@@ -1,14 +1,14 @@
 """
-Gemma Echo — Dosya & Medya Çeviri Modu
+Gemma Echo — File & media translation mode.
 
-Ses (.wav, .mp3, .ogg, .flac, .m4a) ve video (.mp4, .mkv, .avi, .mov)
-dosyalarını STT → LLM pipeline'ından geçirir; Türkçe transkript ve
-İngilizce çeviriyi yan yana gösterir, isteğe bağlı .txt'ye kaydeder.
+Pushes audio (.wav, .mp3, .ogg, .flac, .m4a) and video (.mp4, .mkv, .avi, .mov)
+files through the STT → LLM pipeline. Displays the source transcript and the
+target-language translation side by side and persists them to .txt on request.
 
-Video dosyaları için ffmpeg kullanılarak ses izole edilir.
-Uzun metinler LLM'in context limitini aşmamak için paragraflara bölünür.
+For videos, ``ffmpeg`` is used to isolate the audio track. Long transcripts
+are split into paragraphs so they never overrun the LLM context window.
 
-Entegrasyon (app.py / ControlPanel):
+Integration (app.py / ControlPanel):
     from gui.pages.file_mode import FileModeWindow
     win = FileModeWindow(cfg, app=app)
     win.show()
@@ -47,27 +47,28 @@ _AUDIO_EXT = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
 _VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts"}
 _ALL_EXT   = _AUDIO_EXT | _VIDEO_EXT
 
-# LLM context güvenlik sınırı (kelime)
+# Safety bound for the LLM context window (words).
 _LLM_CHUNK_WORDS = 400
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Ana Pencere
+# Main window
 # ══════════════════════════════════════════════════════════════════════════════
 
 class FileModeWindow(ctk.CTkToplevel):
     """
-    Bağımsız, her zaman açık kalabilen dosya çeviri penceresi.
-    show() / hide() ile ControlPanel'den yönetilir.
+    Standalone file-translation window that can stay open indefinitely.
+
+    Managed from the ControlPanel via show() / hide().
     """
 
     def __init__(self, cfg: ConfigManager, app=None):
         super().__init__()
         self.cfg  = cfg
-        self.app  = app       # GemmaEchoApp referansı (backend erişimi için)
+        self.app  = app       # GemmaEchoApp reference (for backend access).
 
         self._processing  = False
-        self._tmp_wav     = None    # video'dan ayıklanan geçici WAV
+        self._tmp_wav     = None    # Temporary WAV extracted from a video.
 
         self.title(f"{t('app_name')} — {t('file_mode_title')}")
         self.geometry("820x620")
@@ -78,7 +79,7 @@ class FileModeWindow(ctk.CTkToplevel):
 
         self._center()
         self._build()
-        self.withdraw()   # başlangıçta gizli
+        self.withdraw()   # Start hidden.
 
     def _center(self):
         self.update_idletasks()
@@ -89,7 +90,8 @@ class FileModeWindow(ctk.CTkToplevel):
     def show(self, filter_type: str = "all"):
         """
         filter_type: 'all' | 'video' | 'audio'
-        Dosya seçici ilgili filtre ile açılır.
+
+        Open the file picker with the matching filter preselected.
         """
         self._filter_type = filter_type
         self.deiconify()
@@ -102,7 +104,7 @@ class FileModeWindow(ctk.CTkToplevel):
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build(self):
-        # Başlık
+        # Title bar.
         hdr = ctk.CTkFrame(self, fg_color=_C["accent"], corner_radius=0, height=48)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -115,16 +117,16 @@ class FileModeWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=10), text_color="#aabbcc"
         ).pack(side="left", padx=4, pady=16)
 
-        # Dosya seçim çubuğu
+        # File selection bar.
         self._build_file_bar()
 
-        # İlerleme çubuğu
+        # Progress bar.
         self._build_progress()
 
-        # Metin alanları (TR | EN)
+        # Source / target text panels.
         self._build_text_panels()
 
-        # Alt butonlar
+        # Bottom button bar.
         self._build_bottom_bar()
 
     def _build_file_bar(self):
@@ -183,19 +185,19 @@ class FileModeWindow(ctk.CTkToplevel):
         mid.columnconfigure(1, weight=1)
         mid.rowconfigure(1, weight=1)
 
-        # TR başlık
+        # Source transcript header.
         ctk.CTkLabel(
             mid, text=t("tr_transcript"),
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["gray"]
         ).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
 
-        # EN başlık
+        # Target translation header.
         ctk.CTkLabel(
             mid, text=t("en_translation"),
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["blue"]
         ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # TR metin kutusu
+        # Source text box.
         self._tr_box = ctk.CTkTextbox(
             mid, font=ctk.CTkFont(size=12), text_color=_C["gray"],
             fg_color=_C["card"], border_color=_C["border"], border_width=1,
@@ -203,7 +205,7 @@ class FileModeWindow(ctk.CTkToplevel):
         )
         self._tr_box.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
 
-        # EN metin kutusu
+        # Target text box.
         self._en_box = ctk.CTkTextbox(
             mid, font=ctk.CTkFont(size=12), text_color=_C["white"],
             fg_color=_C["card"], border_color=_C["border"], border_width=1,
@@ -240,7 +242,7 @@ class FileModeWindow(ctk.CTkToplevel):
         )
         self._elapsed_label.pack(side="right", padx=16)
 
-    # ── Dosya Seçimi ──────────────────────────────────────────────────────────
+    # ── File selection ────────────────────────────────────────────────────────
 
     def _browse(self):
         path = filedialog.askopenfilename(
@@ -266,7 +268,7 @@ class FileModeWindow(ctk.CTkToplevel):
         self._prog_label.configure(text=t("ready"), text_color=_C["gray"])
         self._elapsed_label.configure(text="")
 
-    # ── İşlem Başlatma ────────────────────────────────────────────────────────
+    # ── Start processing ──────────────────────────────────────────────────────
 
     def _start_processing(self):
         path = self._file_entry.get().strip()
@@ -313,14 +315,14 @@ class FileModeWindow(ctk.CTkToplevel):
             return False
         return getattr(self.app, "_backend_ready", False)
 
-    # ── Pipeline (arka plan thread) ───────────────────────────────────────────
+    # ── Pipeline (background thread) ──────────────────────────────────────────
 
     def _pipeline(self, src_path: str):
         """
-        1. Video ise → WAV'a çevir
-        2. STT (Whisper) → tam Türkçe transkript
-        3. LLM (Gemma/Flash) → İngilizce çeviri (chunk'larla)
-        4. UI'yi güncelle
+        1. Video → extract a WAV.
+        2. STT (Whisper) → full source transcript.
+        3. LLM (Gemma / Flash) → target translation (chunked).
+        4. Update the UI.
         """
         t0 = time.time()
         wav_path  = None
@@ -336,7 +338,7 @@ class FileModeWindow(ctk.CTkToplevel):
                 if wav_path is None or not self._processing:
                     return
             elif ext != ".wav":
-                # MP3/OGG/FLAC → WAV dönüşümü
+                # MP3 / OGG / FLAC → WAV transcoding.
                 self._set_progress(0.05, t("converting_audio"), _C["yellow"])
                 wav_path, owns_temp = self._convert_to_wav(src_path)
                 if wav_path is None or not self._processing:
@@ -357,11 +359,11 @@ class FileModeWindow(ctk.CTkToplevel):
                 self._set_progress(1.0, t("speech_not_recognized"), _C["red"])
                 return
 
-            # TR metni hemen göster
+            # Surface the source transcript immediately.
             self._set_text(self._tr_box, text_tr, _C["gray"])
             self._set_progress(0.55, t("translating"), _C["blue"])
 
-            # ── 3. LLM — uzun metin chunk'lara bölünür ────────────────
+            # ── 3. LLM — long input is sent in chunks ─────────────────
             if not self._processing:
                 return
 
@@ -371,7 +373,7 @@ class FileModeWindow(ctk.CTkToplevel):
             if not self._processing:
                 return
 
-            # EN metni göster
+            # Display the translation.
             self._set_text(self._en_box, text_en, _C["white"])
 
             elapsed = time.time() - t0
@@ -395,10 +397,10 @@ class FileModeWindow(ctk.CTkToplevel):
                 self._btn_cancel.configure(state="disabled"),
             ])
 
-    # ── ffmpeg İşlemleri ─────────────────────────────────────────────────────
+    # ── ffmpeg helpers ────────────────────────────────────────────────────────
 
     def _extract_audio(self, video_path: str) -> tuple[str | None, bool]:
-        """Video dosyasından 16kHz mono WAV çıkarır."""
+        """Extract a 16 kHz mono WAV from a video file."""
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         out_path = tmp.name
@@ -414,7 +416,7 @@ class FileModeWindow(ctk.CTkToplevel):
             return out_path, True
 
         except Exception:
-            # ffmpeg-python başarısız → subprocess ile dene
+            # ffmpeg-python failed → fall back to the ffmpeg subprocess.
             try:
                 result = subprocess.run(
                     ["ffmpeg", "-i", video_path,
@@ -431,7 +433,7 @@ class FileModeWindow(ctk.CTkToplevel):
                 return None, False
 
     def _convert_to_wav(self, audio_path: str) -> tuple[str | None, bool]:
-        """MP3/OGG/FLAC gibi formatları 16kHz mono WAV'a dönüştürür."""
+        """Transcode MP3 / OGG / FLAC-style audio to a 16 kHz mono WAV."""
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         out_path = tmp.name
@@ -460,13 +462,14 @@ class FileModeWindow(ctk.CTkToplevel):
             except FileNotFoundError:
                 return None, False
 
-    # ── LLM Chunk İşleme ─────────────────────────────────────────────────────
+    # ── LLM chunking ─────────────────────────────────────────────────────────
 
     def _translate_chunked(self, translator, full_text: str) -> str:
         """
-        Uzun metni _LLM_CHUNK_WORDS kelimelik paragraflara böler,
-        her parçayı ayrı ayrı çevirir, birleştirir.
-        Kısa metinlerde (≤ chunk sınırı) tek seferde işler.
+        Split a long input into paragraphs of ``_LLM_CHUNK_WORDS`` words,
+        translate each segment separately and concatenate the results.
+
+        Short inputs (≤ chunk limit) are translated in a single call.
         """
         words = full_text.split()
 
@@ -474,7 +477,7 @@ class FileModeWindow(ctk.CTkToplevel):
             result = translator.translate(full_text)
             return result.get("translation", full_text)
 
-        # Paragraflara böl
+        # Split into paragraphs.
         chunks = []
         buf    = []
         for word in words:
@@ -502,7 +505,7 @@ class FileModeWindow(ctk.CTkToplevel):
 
         return " ".join(translations)
 
-    # ── Kayıt ─────────────────────────────────────────────────────────────────
+    # ── Save ──────────────────────────────────────────────────────────────────
 
     def _save_text(self, lang: str):
         box = self._tr_box if lang == "tr" else self._en_box
@@ -530,14 +533,14 @@ class FileModeWindow(ctk.CTkToplevel):
         if save_path:
             with open(save_path, "w", encoding="utf-8") as f:
                 f.write(text)
-            # Son kullanılan dizini kaydet
+            # Remember the last-used directory.
             self.cfg.set("file_mode", "output_dir", os.path.dirname(save_path))
             self.cfg.save()
 
-    # ── UI Yardımcıları (thread-safe) ─────────────────────────────────────────
+    # ── UI helpers (thread-safe) ──────────────────────────────────────────────
 
     def _set_progress(self, val: float, msg: str, color: str = None):
-        """İlerleme çubuğunu ve mesajı thread'den güvenli günceller."""
+        """Thread-safe progress bar + label update."""
         def _update():
             self._progress.set(max(0.0, min(1.0, val)))
             self._prog_label.configure(
@@ -546,7 +549,7 @@ class FileModeWindow(ctk.CTkToplevel):
         self.after(0, _update)
 
     def _set_text(self, box: ctk.CTkTextbox, text: str, color: str = None):
-        """Metin kutusunu thread'den güvenli günceller."""
+        """Thread-safe text box update."""
         def _update():
             box.configure(state="normal")
             box.delete("0.0", "end")
@@ -558,7 +561,7 @@ class FileModeWindow(ctk.CTkToplevel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Bağımsız test (mock backend)
+# Standalone test (mock backend)
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

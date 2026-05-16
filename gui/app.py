@@ -7,13 +7,13 @@ import traceback
 
 import customtkinter as ctk
 
-# Proje kokunu path'e ekle
+# Make the project root importable.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# ── Merkezi loglama sistemi — her şeyden önce başlat ─────────────────────────
+# ── Initialize the central logging subsystem before anything else ────────────
 from core.logger import setup_logging, get_logger
 setup_logging()
 _app_log = get_logger("gemma_echo.gui")
@@ -37,42 +37,44 @@ _C = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Ana Uygulama
+# Application root
 # ══════════════════════════════════════════════════════════════════════════════
 
 class GemmaEchoApp:
     """
-    Uygulamanin yasam dongusunu yoneten sinif.
-    Dogrudan bir pencere degil; pencereler arasinda koordinasyon saglar.
+    Owns the application lifecycle.
+
+    Not a window itself — coordinates between windows (main + overlay) and the
+    backend pipeline.
     """
 
     def __init__(self):
         self.cfg             = ConfigManager()
-        # Dil ayarini baslat
+        # Apply the persisted UI language.
         ui_lang = self.cfg.get("language", "ui_language", default="tr")
         set_language(ui_lang)
-        
-        self._rq             = queue.Queue()   # orchestrator → overlay koprusu
+
+        self._rq             = queue.Queue()   # Orchestrator → overlay bridge.
         self._overlay: Overlay | None          = None
-        self._main                             = None   # MainWindow
+        self._main                             = None   # MainWindow.
         self._backend_ready                    = False
         self._recorder                         = None
-        self._inbound_recorder                 = None   # loopback recorder
+        self._inbound_recorder                 = None   # WASAPI loopback recorder.
         self._ptt_mode                         = None   # "outbound" | "inbound" | None
         self._orchestrator                     = None
         self._backend_thread                   = None
-        self._ptt_hotkeys_registered          = False  # Space/Alt sadece canlı kayıt aktifken
-        self._outbound_hook                   = None   # keyboard.add_hotkey handle'i
-        self._inbound_hook                    = None   # keyboard.add_hotkey handle'i
+        self._ptt_hotkeys_registered          = False  # Space/Alt are bound only while live capture is active.
+        self._outbound_hook                   = None   # keyboard.add_hotkey handle.
+        self._inbound_hook                    = None   # keyboard.add_hotkey handle.
 
-        # Modül düzeyindeki logger — _init_logging() artık gerekli değil
+        # Module-scoped logger — _init_logging() is no longer necessary.
         self.logger = get_logger("gemma_echo.app")
-        self.logger.info("Gemma Echo GUI başlatılıyor")
+        self.logger.info("Gemma Echo GUI starting up")
 
         self._install_exception_hooks()
 
     def _install_exception_hooks(self):
-        """Ana ve arka plan thread kancalarını kurar."""
+        """Install the main-thread and background-thread exception hooks."""
 
         def excepthook(exc_type, exc_value, exc_traceback):
             if issubclass(exc_type, KeyboardInterrupt):
@@ -116,7 +118,7 @@ class GemmaEchoApp:
                 parent = self._main if self._main is not None else None
                 messagebox.showerror(
                     title,
-                    f"{message}\n\nDetaylar '{os.path.basename(os.path.abspath(_ROOT))}.log' dosyasına kaydedildi.",
+                    f"{message}\n\nDetails were written to '{os.path.basename(os.path.abspath(_ROOT))}.log'.",
                     parent=parent,
                 )
             except Exception:
@@ -129,7 +131,7 @@ class GemmaEchoApp:
                 pass
 
     def _on_vram_issue(self):
-        """Yerel model VRAM hatası — ana iş parçacığında messagebox."""
+        """Local-model VRAM failure — surface a messagebox on the main thread."""
         main = self._main
         if main is None:
             return
@@ -153,40 +155,40 @@ class GemmaEchoApp:
             self._run_wizard()
         self._launch_main()
 
-    # ── Kurulum Sihirbazi ─────────────────────────────────────────────────────
+    # ── Setup wizard ──────────────────────────────────────────────────────────
 
     def _run_wizard(self):
         from gui.pages.setup_wizard import SetupWizard
         wizard = SetupWizard(self.cfg, on_complete=self._on_wizard_done)
         wizard.mainloop()
-        # mainloop bitti (wizard destroy edildi) → config yenile
+        # mainloop returned (wizard was destroyed) → reload the config.
         self.cfg = ConfigManager()
 
     def _on_wizard_done(self, cfg: ConfigManager):
-        # Sadece flag — _launch_main wizard.mainloop() sonrasinda cagrilir
+        # Pure handoff — _launch_main runs immediately after wizard.mainloop() exits.
         self.cfg = cfg
 
-    # ── Ana Ekran ─────────────────────────────────────────────────────────────
+    # ── Main window ───────────────────────────────────────────────────────────
 
     def _launch_main(self):
-        """Tek pencere (MainWindow) + overlay baslatir."""
+        """Spin up the single main window + overlay."""
         from gui.pages.main_window import MainWindow
 
-        # MainWindow ana event loop'u tasir (CTk)
+        # MainWindow owns the CTk event loop.
         self._main    = MainWindow(self.cfg, app=self)
         self._overlay = Overlay(self.cfg, result_queue=self._rq)
         self._overlay.on_telemetry_update = self._on_telemetry_update
 
-        # Backend arka planda yukle
+        # Initialize the backend on a background thread.
         self._backend_thread = threading.Thread(
             target=self._load_backend, daemon=True
         )
         self._backend_thread.start()
 
-        # Overlay ayarlar butonunu ana pencereye bagla
+        # Wire the overlay's "Settings" button to the main-window view switcher.
         self._overlay._open_settings = lambda: self._main.switch_view("settings")
 
-        # Ana pencere mainloop'u baslatir
+        # Hand control to the main window's mainloop.
         self._main.mainloop()
 
     def _on_telemetry_update(self, data: dict):
@@ -198,12 +200,13 @@ class GemmaEchoApp:
                 except Exception:
                     pass
 
-    # ── Backend Yukleme ───────────────────────────────────────────────────────
+    # ── Backend loading ───────────────────────────────────────────────────────
 
     def _load_backend(self):
         """
-        STT / LLM / TTS modellerini arka planda yukler.
-        Tamamlaninca orchestrator'u result_queue'ya baglar.
+        Load the STT / LLM / TTS modules on a background thread.
+
+        Once everything is ready, wire the orchestrator to the result queue.
         """
         try:
             self._overlay.set_status(t("loading_models"), _C["yellow"])
@@ -231,7 +234,7 @@ class GemmaEchoApp:
             self._backend_ready = True
             self._overlay.set_status(t("ready_vad"), _C["dim"])
 
-            # ─── BROADCASTER AYARLARI ───────────────────────────
+            # ─── BROADCASTER ROUTING ───────────────────────────
             if self.cfg.get("broadcaster", "enabled", default=False):
                 dev_idx = self.cfg.get("broadcaster", "output_device_index")
                 self._orchestrator.synthesizer.set_output_device(dev_idx)
@@ -242,26 +245,26 @@ class GemmaEchoApp:
         except Exception as e:
             error_text = str(e)
             traceback_text = traceback.format_exc()
-            self.logger.error("Backend yükleme hatası:\n%s", traceback_text)
+            self.logger.error("Backend load failure:\n%s", traceback_text)
             self._overlay.set_status(t("mode_error", error_text), _C["red"])
             if self._main is not None:
                 try:
                     self._main.after(0, lambda: self._show_error_dialog(
-                        "Backend Yükleme Hatası",
+                        "Backend Load Failure",
                         traceback_text
                     ))
                 except Exception:
                     pass
 
-    # ── Kayit Kontrolu ─────────────────────────────────────────────────────────
+    # ── Recording control ─────────────────────────────────────────────────────
 
     def start_live(self):
-        """VAD veya Bas-Konuş modunda kayıt başlatır."""
+        """Start live capture in either VAD or push-to-talk mode."""
         if not self._backend_ready:
             self._overlay.set_status(t("backend_not_ready"), _C["yellow"])
             return
         if self._recorder is not None:
-            return   # zaten calisiyor
+            return   # Already running.
 
         from stt.recorder import Recorder
         aggressiveness = self.cfg.get("recording", "vad_aggressiveness", default=2)
@@ -278,7 +281,7 @@ class GemmaEchoApp:
         self._overlay.set_status(t("live_active"), _C["green"])
         self._ensure_ptt_hotkeys()
 
-        # ─── OVERLAY GORUNURLUK ───────────────────────────
+        # ─── OVERLAY VISIBILITY ───────────────────────────
         self._overlay.deiconify()
         self._overlay.lift()
 
@@ -292,18 +295,19 @@ class GemmaEchoApp:
         if self._overlay:
             self._overlay.set_status(t("ready_stopped"), _C["dim"])
 
-    # ── Inbound (Loopback) Kontrolu ────────────────────────────────────────────
+    # ── Inbound (WASAPI loopback) control ────────────────────────────────────
 
     def start_inbound(self):
-        """WASAPI Loopback'ten karsi tarafin sesini dinlemeye basla."""
+        """Start listening to the counterpart's audio via the WASAPI loopback."""
         if not self._backend_ready:
             return
         if self._inbound_recorder is not None:
-            return  # zaten calisiyor
+            return  # Already running.
 
         from stt.recorder import LoopbackRecorder
 
-        # process_inbound() cagiran proxy — mevcut Orchestrator'u degistirmiyor
+        # Proxy that routes captured audio through process_inbound() —
+        # the existing Orchestrator instance stays untouched.
         class _InboundProxy:
             def __init__(self, orch):
                 self._orch = orch
@@ -328,16 +332,17 @@ class GemmaEchoApp:
                 self._inbound_recorder._stop_event.set()
             self._inbound_recorder = None
 
-    # ── Dual PTT Anahtarlama ───────────────────────────────────────────────────
+    # ── Dual PTT toggling ─────────────────────────────────────────────────────
 
     def switch_ptt(self, mode: str):
         """
-        mode: "outbound" → sen konusursun (mikrofon aktif, loopback durur)
-              "inbound"  → karsi tarafi dinlersin (loopback aktif, mikrofon durur)
-        Ayni moda tekrar basilirsa toggle gibi davranir (durur).
+        mode: "outbound" → user is speaking (mic active, loopback paused).
+              "inbound"  → user is listening (loopback active, mic paused).
+
+        Pressing the same key again toggles the current mode off.
         """
         if mode == self._ptt_mode:
-            # Ayni tusa tekrar basildi — her ikisini durdur
+            # Same key was pressed again — stop both directions.
             self.stop_live()
             self.stop_inbound()
             self._ptt_mode = None
@@ -347,7 +352,7 @@ class GemmaEchoApp:
             self._sync_ptt_hotkeys_state()
             return
 
-        # Once her ikisini de durdur, sonra istenen yonu ac
+        # Stop both first, then start the requested direction.
         self.stop_live()
         self.stop_inbound()
         self._ptt_mode = mode
@@ -366,14 +371,14 @@ class GemmaEchoApp:
         self._notify_live_view_ptt(mode)
 
     def _notify_live_view_ptt(self, mode):
-        """LiveView PTT buton görselini thread-safe olarak güncelle."""
+        """Refresh the LiveView PTT button visuals in a thread-safe way."""
         if not self._main:
             return
         live = getattr(self._main, "_views", {}).get("live")
         if live and hasattr(live, "_update_ptt_state"):
             self._main.after(0, lambda m=mode: live._update_ptt_state(m))
 
-    # ── Global Hotkey Kaydedici (yalnizca canli kayit / PTT oturumu acikken) ───
+    # ── Global hotkey registrar (active only during a live capture / PTT session) ───
 
     def _live_hotkey_session_active(self) -> bool:
         return (
@@ -383,20 +388,22 @@ class GemmaEchoApp:
         )
 
     def _ensure_ptt_hotkeys(self):
-        """Canli mod acikken Space/Alt hook'larini bir kez yukler."""
+        """Bind the Space / Alt hooks (once) when a live session is active."""
         if self._ptt_hotkeys_registered or not self._live_hotkey_session_active():
             return
         self._register_hotkeys()
 
     def _sync_ptt_hotkeys_state(self):
-        """Kayit ve PTT tamamen kapandiy hook'lari kaldir."""
+        """Unbind the hotkeys once every live session has ended."""
         if self._live_hotkey_session_active():
             return
         self._unregister_hotkeys()
 
     def _clear_hotkey_handles(self):
-        """Yalniz kendi kaydettigimiz handle'lari kaldir; baska modulleri etkileme.
-        Hem _unregister_hotkeys hem _reregister_hotkeys tarafindan kullanilir."""
+        """Remove only the hotkey handles we registered ourselves — do not touch other modules.
+
+        Used by both _unregister_hotkeys and _reregister_hotkeys.
+        """
         try:
             import keyboard
         except ImportError:
@@ -412,10 +419,10 @@ class GemmaEchoApp:
             try:
                 keyboard.remove_hotkey(handle)
             except (KeyError, ValueError):
-                # Zaten kaldirilmis ya da gecersiz — gormezden gel.
+                # Already removed or invalid — ignore.
                 pass
             except Exception as e:
-                print(f"[UYARI] {attr} kaldirilamadi: {e}")
+                print(f"[WARN] failed to remove {attr}: {e}")
             setattr(self, attr, None)
         self._ptt_hotkeys_registered = False
 
@@ -423,13 +430,14 @@ class GemmaEchoApp:
         if not self._ptt_hotkeys_registered:
             return
         self._clear_hotkey_handles()
-        print("[PTT] Global hotkey'ler kaldirildi (canli oturum kapali).")
+        print("[PTT] Global hotkeys removed (live session ended).")
 
     def _register_hotkeys(self):
         """
-        Global klavye kisayollarini kaydeder.
-        Varsayilan: SPACE = sen konusursun, ALT = karsi tarafi dinle
-        config.json'dan override edilebilir:
+        Register the global keyboard shortcuts.
+
+        Defaults: SPACE = user speaks; ALT = listen to the counterpart.
+        Overridable via config.json:
           "inbound": { "hotkey_outbound": "space", "hotkey_inbound": "alt" }
         """
         if self._ptt_hotkeys_registered:
@@ -444,32 +452,32 @@ class GemmaEchoApp:
             self._inbound_hook  = keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
             self._ptt_hotkeys_registered = True
 
-            print(f"[PTT] Hotkey kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf")
+            print(f"[PTT] Hotkey registered: '{key_out}' = self | '{key_in}' = counterpart")
         except ImportError:
-            print("[UYARI] 'keyboard' kutuphanesi bulunamadi. 'pip install keyboard' calistir.")
+            print("[WARN] 'keyboard' library not installed. Run 'pip install keyboard'.")
         except Exception as e:
-            print(f"[UYARI] Hotkey kaydedilemedi: {e}")
+            print(f"[WARN] Hotkey registration failed: {e}")
 
     def _reregister_hotkeys(self, key_out: str, key_in: str):
-        """Ayarlar'dan tus degisince: yalniz kendi handle'larimizi kaldir, yeniden kaydet."""
+        """Settings panel changed the bindings: drop only our own handles and re-register."""
         try:
             import keyboard
         except ImportError:
-            print("[UYARI] 'keyboard' kutuphanesi bulunamadi.")
+            print("[WARN] 'keyboard' library not installed.")
             return
 
         self._clear_hotkey_handles()
 
         if not self._live_hotkey_session_active():
-            # Oturum kapali; yeni tuslar config'e zaten yazildi,
-            # bir sonraki canli oturum acilisinda _register_hotkeys okuyup kullanir.
+            # No active session; the new keys are already persisted to config,
+            # and _register_hotkeys will pick them up on the next live session.
             print(
-                f"[PTT] Yeni tuslar kaydedildi (oturum kapali): "
-                f"'{key_out}' = sen | '{key_in}' = karsi taraf"
+                f"[PTT] New bindings persisted (no active session): "
+                f"'{key_out}' = self | '{key_in}' = counterpart"
             )
             if self._overlay:
                 self._overlay.set_status(
-                    f"Tuslar kaydedildi: {key_out} / {key_in}", _C["blue"]
+                    f"Bindings saved: {key_out} / {key_in}", _C["blue"]
                 )
             return
 
@@ -478,20 +486,20 @@ class GemmaEchoApp:
             self._inbound_hook  = keyboard.add_hotkey(key_in,  lambda: self.switch_ptt("inbound"))
             self._ptt_hotkeys_registered = True
             print(
-                f"[PTT] Hotkey yeniden kaydedildi: '{key_out}' = sen | '{key_in}' = karsi taraf"
+                f"[PTT] Hotkey re-registered: '{key_out}' = self | '{key_in}' = counterpart"
             )
             if self._overlay:
                 self._overlay.set_status(
-                    f"Tuslar guncellendi: {key_out} / {key_in}", _C["blue"]
+                    f"Bindings updated: {key_out} / {key_in}", _C["blue"]
                 )
         except Exception as e:
-            print(f"[UYARI] Hotkey yeniden kaydedilemedi: {e}")
+            print(f"[WARN] Hotkey re-registration failed: {e}")
 
     def switch_mode(self, mode: str):
         if not self._orchestrator:
             return
         if getattr(self, "_mode_switching", False):
-            return  # Zaten mod değiştiriliyor, tekrar tetiklenmesin
+            return  # A mode transition is already in flight — debounce.
         self._mode_switching = True
 
         def _do_switch():
@@ -516,7 +524,7 @@ class GemmaEchoApp:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Giris Noktasi
+# Entrypoint
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():

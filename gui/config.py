@@ -1,7 +1,8 @@
 """
-Konfigürasyon yöneticisi.
-config.json dosyasini okur/yazar. Tum GUI bilesenlerinin
-tek gercek kaynagi (single source of truth) bu siniftir.
+Configuration manager.
+
+Reads and writes config.json. The single source of truth that every GUI
+component consults for persisted application state.
 """
 
 import json
@@ -9,22 +10,23 @@ import os
 
 from gui.hardware_scan import scan as hw_scan
 
-# config.json konumu: proje koku (main.py ile ayni dizin)
+# config.json location: project root (alongside main.py).
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 
 
 def _default_config(hw: dict) -> dict:
     """
-    Donanim taramasina gore varsayilan konfigurasyonu olusturur.
-    Ilk calistirmada kullanilir.
+    Produce the default configuration based on the detected hardware profile.
+
+    Used on the very first launch.
     """
     p = hw["recommended_profile"]
     return {
         "version": "1.0",
         "first_run": True,
 
-        # ── Donanim (bilgi amacli, degistirilmez) ─────────────────
+        # ── Hardware (informational only — never mutated by the user) ─────
         "hardware": {
             "os":        hw["os"],
             "ram_gb":    hw["ram_gb"],
@@ -37,23 +39,23 @@ def _default_config(hw: dict) -> dict:
             },
         },
 
-        # ── API Anahtarlari ────────────────────────────────────────
+        # ── API keys ─────────────────────────────────────────────────────
         "api_keys": {
             "gemini":      "",   # https://aistudio.google.com
             "groq":        "",   # https://console.groq.com
             "elevenlabs":  "",   # https://elevenlabs.io
         },
 
-        # ── ElevenLabs Ses Secimi ──────────────────────────────────
-        "elevenlabs_voice_id":   "",   # API'den secilir
-        "elevenlabs_voice_name": "",   # Gosterim icin
+        # ── ElevenLabs voice selection ───────────────────────────────────
+        "elevenlabs_voice_id":   "",   # Chosen via the ElevenLabs API.
+        "elevenlabs_voice_name": "",   # Display label.
 
-        # ── Calisma Modu ───────────────────────────────────────────
+        # ── Runtime mode ─────────────────────────────────────────────────
         "mode": {
-            # Orchestrator modu (VALID_MODES listesinden)
+            # Orchestrator mode (drawn from Orchestrator.VALID_MODES).
             "current": p["orchestrator_mode"],
 
-            # Granüler bileşen ayarlari (Ayarlar panelinden degistirilebilir)
+            # Granular component settings (editable from the Settings panel).
             "stt": {
                 "backend": p["stt_backend"],   # "local_gpu" | "local_cpu" | "cloud_auto"
                 "device":  p["stt_device"],    # "cuda" | "mps" | "cpu"
@@ -61,7 +63,7 @@ def _default_config(hw: dict) -> dict:
             "llm": {
                 "backend": p["llm_backend"],   # "online" | "offline"
                 "device":  p["llm_device"],    # "cuda" | "mps" | "cpu"
-                "model":   "gemma-4",          # Varsayilan: Gemma 4 (yarisma)
+                "model":   "gemma-4",          # Default: Gemma 4 (competition baseline).
             },
             "tts": {
                 "backend": p["tts_backend"],   # "online" | "gpu" | "offline"
@@ -69,65 +71,65 @@ def _default_config(hw: dict) -> dict:
             },
         },
 
-        # ── Kayit Modu ─────────────────────────────────────────────
+        # ── Recording subsystem ──────────────────────────────────────────
         "recording": {
-            "push_to_talk":         False,  # True: bas-konus | False: VAD otomatik
-            "vad_aggressiveness":   3,      # 0-3 (3 en agresif)
-            "silence_ms":           900,    # Cumle sonu sessizlik suresi (ms)
-            "streaming_enabled":    True,   # Noktalama bazli erken gonderim
-            "paragraph_silence_ms": 2000,   # Paragraf sonu (uzun sessizlik)
-            "min_phrase_len":       15,     # Minimum frame sayisi
+            "push_to_talk":         False,  # True: push-to-talk; False: VAD automatic.
+            "vad_aggressiveness":   3,      # 0-3 (3 = most aggressive).
+            "silence_ms":           900,    # End-of-sentence silence duration (ms).
+            "streaming_enabled":    True,   # Punctuation-based early commit.
+            "paragraph_silence_ms": 2000,   # End-of-paragraph silence (longer pause).
+            "min_phrase_len":       15,     # Minimum frame count.
         },
 
-        # ── Overlay Pencere ────────────────────────────────────────
+        # ── Overlay window ───────────────────────────────────────────────
         "overlay": {
             "always_on_top": True,
             "opacity":       0.92,      # 0.0 - 1.0
             "width":         480,
             "height":        160,
-            "position_x":    -1,        # -1: ekran sagina yaslansın
-            "position_y":    -1,        # -1: ekran altina yaslansın
+            "position_x":    -1,        # -1: dock to the right edge of the screen.
+            "position_y":    -1,        # -1: dock to the bottom edge of the screen.
         },
 
-        # ── Dosya Modu ─────────────────────────────────────────────
+        # ── File mode ────────────────────────────────────────────────────
         "file_mode": {
-            "output_dir":        "",    # Bos: kaynak dosya konumuna yaz
-            "save_transcript":   True,  # TR transkript .txt olarak kaydedilsin mi
-            "save_translation":  True,  # EN ceviri .txt olarak kaydedilsin mi
+            "output_dir":        "",    # Empty: write next to the source file.
+            "save_transcript":   True,  # Persist source-language transcript as .txt.
+            "save_translation":  True,  # Persist target-language translation as .txt.
         },
 
-        # ── Dil Ayarlari ───────────────────────────────────────────
+        # ── Language settings ────────────────────────────────────────────
         "language": {
-            "source":      "tr",          # Kaynak dil kodu (ISO 639-1)
-            "target":      "en",          # Hedef dil kodu
-            "source_name": "Turkish",     # LLM promptu için kaynak dil adı
-            "target_name": "English",     # LLM promptu için hedef dil adı
-            "ui_language": "tr",          # Arayüz dili
+            "source":      "tr",          # Source language code (ISO 639-1).
+            "target":      "en",          # Target language code.
+            "source_name": "Turkish",     # Source-language name for the LLM prompt.
+            "target_name": "English",     # Target-language name for the LLM prompt.
+            "ui_language": "tr",          # GUI display language.
         },
 
-        # ── Çeviri Karakteri (Persona) ─────────────────────────
-        # "default" — Hiçbir persona (varsayılan, kullanıcı seçmek zorunda değil)
+        # ── Translation persona ──────────────────────────────────────────
+        # "default" — No persona (default; the user is not forced to pick one).
         # "official" | "streamer" | "casual" | "literary"
         "persona": "default",
 
 
-        # ── Yayıncı / İçerik Üretici Ayarları ──────────────────────
+        # ── Broadcaster / content-creator settings ───────────────────────
         "broadcaster": {
-            "enabled":             False, # Sanal mikrofona yönlendirme aktif mi?
-            "output_device_index": None,  # Seçilen cihaz ID'si (None=Varsayılan)
+            "enabled":             False, # Route the dubbed audio to a virtual mic?
+            "output_device_index": None,  # Chosen device ID (None = system default).
             "output_device_name":  "Default",
         },
 
-        # ── Onerilen Profil (bilgi amacli) ────────────────────────
+        # ── Recommended profile (informational) ──────────────────────────
         "recommended_profile": p,
     }
 
 
 class ConfigManager:
     """
-    config.json icin thread-safe okuma/yazma arayuzu.
+    Thread-safe read/write façade over config.json.
 
-    Kullanim:
+    Usage:
         cfg = ConfigManager()
         api_key = cfg.get("api_keys", "groq")
         cfg.set("api_keys", "groq", "gsk_xxx")
@@ -139,11 +141,11 @@ class ConfigManager:
         self._data: dict = {}
         self._load()
 
-    # ── Yukleme ────────────────────────────────────────────────────
+    # ── Loading ──────────────────────────────────────────────────────
 
     def _load(self):
         """
-        config.json varsa yukle, yoksa donanim taramasiyla varsayilani olustur.
+        Load config.json when present; otherwise scan hardware and create defaults.
         """
         if os.path.exists(self._path):
             try:
@@ -151,21 +153,21 @@ class ConfigManager:
                     self._data = json.load(f)
                 return
             except (json.JSONDecodeError, OSError):
-                # Bozuk dosya — yeniden olustur
+                # Corrupted file — regenerate from scratch.
                 pass
 
-        # Ilk calistirma: donanim tara, varsayilan olustur
+        # First launch: scan hardware and emit the default profile.
         hw = hw_scan()
         self._data = _default_config(hw)
         self.save()
 
-    # ── Okuma ──────────────────────────────────────────────────────
+    # ── Reading ──────────────────────────────────────────────────────
 
     def get(self, *keys, default=None):
         """
-        Ic ice anahtarla deger oku.
+        Read a value via a nested key path.
 
-        Ornekler:
+        Examples:
             cfg.get("api_keys", "groq")          -> "gsk_xxx"
             cfg.get("mode", "stt", "backend")    -> "local_gpu"
             cfg.get("overlay", "opacity")        -> 0.92
@@ -178,22 +180,22 @@ class ConfigManager:
         return node
 
     def all(self) -> dict:
-        """Tum konfigurasyonu dondurur (salt okunur kullanim icin)."""
+        """Return the full configuration dict (intended for read-only access)."""
         return self._data
 
-    # ── Yazma ──────────────────────────────────────────────────────
+    # ── Writing ──────────────────────────────────────────────────────
 
     def set(self, *keys_and_value):
         """
-        Ic ice anahtarla deger yaz. Son arguman degerdir.
+        Set a value at a nested key path. The final positional argument is the value.
 
-        Ornekler:
+        Examples:
             cfg.set("api_keys", "groq", "gsk_yyy")
             cfg.set("overlay", "opacity", 0.85)
             cfg.set("first_run", False)
         """
         if len(keys_and_value) < 2:
-            raise ValueError("En az bir anahtar ve bir deger gereklidir.")
+            raise ValueError("At least one key and one value are required.")
 
         *keys, value = keys_and_value
         node = self._data
@@ -204,12 +206,12 @@ class ConfigManager:
         node[keys[-1]] = value
 
     def save(self):
-        """Mevcut konfigurasyonu diske yazar."""
+        """Persist the current configuration to disk."""
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
         with open(self._path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
 
-    # ── Ozel Yardimcilar (GUI butonlari icin kisayollar) ──────────
+    # ── Convenience helpers (shortcuts for GUI buttons) ──────────────
 
     def mark_first_run_complete(self):
         self.set("first_run", False)

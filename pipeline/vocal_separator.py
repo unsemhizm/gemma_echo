@@ -1,36 +1,37 @@
-"""Demucs tabanli vokal ayristirici — dublaj on-isleme.
+"""Demucs-based vocal separator — dubbing pre-processing stage.
 
-Amac
-====
-Arka plan muzigi olan videolarda iki kritik sorun olusuyor:
+Motivation
+==========
+Two critical problems arise on videos that contain background music:
 
-1. Whisper, muzik dominant oldugu anlarda 'no_speech' karari verip konusma
-   bolgelerini transkripsiyona dahil etmiyor (sessizce atliyor).
-2. XTTS-v2 referans seste muzik duydugunda klonlamayi bozuyor: cikti ses
-   metalik / robotik / cizirti dolu hale geliyor (model muzigi 'gırtlaktan
-   gelen bir dokun' sanip sentezliyor).
+1. Whisper marks the music-dominant intervals as 'no_speech' and silently
+   skips the speech regions, so they never make it into the transcript.
+2. When the XTTS-v2 reference audio contains music, voice cloning degrades —
+   the output becomes metallic / robotic / artifact-laden because the model
+   interprets the music as a "throat tone" and synthesizes it accordingly.
 
-Cozum: Meta'nin Demucs (htdemucs) modeli ile sesi VOCALS + INSTRUMENTAL
-olarak ayir. Whisper ve XTTS yalnizca tertemiz vocals.wav uzerinde calisir;
-final mix asamasinda orijinal instrumental geri eklenir (auto-ducking ile).
+Solution: separate the input audio into VOCALS + INSTRUMENTAL using Meta's
+Demucs (htdemucs) model. Whisper and XTTS then run exclusively on the clean
+vocals.wav, and the original instrumental is mixed back in (with auto-ducking)
+during the final assembly step.
 
-Mimari karari: Programmatic API (CLI degil)
-===========================================
-Demucs CLI'yi torchaudio.save kullaniyor — torchaudio 2.11+ save fonksiyonu
-artik 'torchcodec' paketini zorunlu kiliyor. torchcodec ise Windows'ta
-FFmpeg surum DLL'leriyle catisip yuklenemiyor (libtorchcodec_core4/5.dll
-hatasi). Bu nedenle CLI yerine programmatic API kullaniyoruz:
+Design decision: programmatic API (not the CLI)
+===============================================
+The Demucs CLI relies on ``torchaudio.save``; under torchaudio 2.11+ the save
+function mandates the ``torchcodec`` package, which on Windows clashes with
+the installed FFmpeg DLL versions (``libtorchcodec_core4/5.dll`` load errors).
+We therefore use the programmatic API instead:
 
-  - Ses yukleme:  ffmpeg subprocess -> WAV -> soundfile ile oku
-  - Demucs:       apply_model (PyTorch direkt, dosya I/O yok)
-  - Ses yazma:    soundfile (torchaudio.save bypass — torchcodec gereksiz)
+  - Audio load:  ffmpeg subprocess -> WAV -> read with ``soundfile``.
+  - Demucs:      ``apply_model`` (direct PyTorch, no file I/O).
+  - Audio write: ``soundfile`` (bypasses torchaudio.save — no torchcodec needed).
 
-Bonus: programmatic modda Demucs modelini biz kontrol ediyoruz, unload()
-metodu ile VRAM'i sirali bosaltabiliyoruz (pipeline'da Whisper'a yer acmak
-icin gerekli).
+Bonus: in programmatic mode we own the Demucs model lifecycle and can call
+``unload()`` to release VRAM in order — required so the Whisper stage can
+claim VRAM next.
 
-VRAM tahmini: htdemucs ~3GB GPU inference. ~4 dakikalik video icin
-GPU'da ~30-60 sn, CPU'da ~5-10 dk surer.
+VRAM estimate: htdemucs ~3 GB GPU inference. A ~4-minute video takes ~30-60s
+on the GPU and ~5-10 min on the CPU.
 """
 
 from __future__ import annotations
@@ -46,28 +47,28 @@ log = logging.getLogger(__name__)
 
 
 class VocalSeparator:
-    """Demucs htdemucs programmatic wrapper.
+    """Programmatic wrapper around Demucs htdemucs.
 
-    Lazy-load: ilk separate() cagrisinda model GPU/CPU'ya yuklenir.
-    unload(): VRAM'i bosaltir — pipeline'da Whisper/Gemma'ya yer acmak icin
-    Demucs adimi bittikten sonra cagrilmali.
+    Lazy-loaded: the model is allocated on the first ``separate()`` call.
+    ``unload()`` releases VRAM and must be called after the Demucs stage so
+    that Whisper / Gemma can claim the GPU for the next pipeline stage.
     """
 
-    MODEL_NAME = "htdemucs"     # Hybrid Transformer Demucs (denge: hız + kalite)
-    DEMUCS_SR = 44100           # Demucs egitim sample rate'i; girdi bu hiza
-                                # cevrilir (ffmpeg ile)
+    MODEL_NAME = "htdemucs"     # Hybrid Transformer Demucs (good speed/quality trade-off).
+    DEMUCS_SR = 44100           # Demucs training sample rate; inputs are
+                                # resampled to this rate via ffmpeg.
 
     def __init__(self):
-        self._available = None    # is_available() cache
+        self._available = None    # is_available() cache.
         self._model = None
         self._device = None
 
     # ─────────────────────────────────────────────────────────────────────
-    # YETERLILIK KONTROLU
+    # CAPABILITY CHECK
     # ─────────────────────────────────────────────────────────────────────
 
     def is_available(self) -> bool:
-        """Demucs + soundfile import edilebilir mi? Tek sefer test, cache'li."""
+        """Check whether Demucs + soundfile can be imported. Cached after the first call."""
         if self._available is not None:
             return self._available
         try:
@@ -82,26 +83,26 @@ class VocalSeparator:
         return self._available
 
     # ─────────────────────────────────────────────────────────────────────
-    # MODEL YASAM DONGUSU
+    # MODEL LIFECYCLE
     # ─────────────────────────────────────────────────────────────────────
 
     def _ensure_loaded(self):
-        """Demucs modelini lazy-load yapar (ilk separate() cagrisinda)."""
+        """Lazy-load the Demucs model on the first separate() invocation."""
         if self._model is not None:
             return
         import torch
         from demucs.pretrained import get_model
 
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info(f"Demucs ({self.MODEL_NAME}) yukleniyor (device={self._device})...")
+        log.info(f"Loading Demucs ({self.MODEL_NAME}) (device={self._device})...")
         t0 = time.time()
         self._model = get_model(self.MODEL_NAME)
         self._model.to(self._device)
         self._model.eval()
-        log.info(f"Demucs hazir ({int((time.time() - t0) * 1000)}ms).")
+        log.info(f"Demucs ready ({int((time.time() - t0) * 1000)} ms).")
 
     def unload(self):
-        """Demucs modelini VRAM'den bosalt. Pipeline'da Whisper'dan once cagrilir."""
+        """Evict the Demucs model from VRAM. Called before the Whisper stage in the pipeline."""
         if self._model is None:
             return
         try:
@@ -118,48 +119,48 @@ class VocalSeparator:
                 torch.cuda.empty_cache()
         except Exception:
             pass
-        log.info("Demucs VRAM'den bosaltildi.")
+        log.info("Demucs evicted from VRAM.")
 
     # ─────────────────────────────────────────────────────────────────────
-    # ASIL AYIRMA (programmatic API)
+    # CORE SEPARATION (programmatic API)
     # ─────────────────────────────────────────────────────────────────────
 
     def separate(self, input_path: str, work_dir: str | None = None,
                  progress_cb=None) -> tuple[str, str]:
-        """Bir audio/video dosyasini vocals + instrumental olarak ayirir.
+        """Split an audio/video file into vocals + instrumental.
 
-        Adimlar:
-          1) ffmpeg subprocess ile 44.1kHz stereo PCM WAV'a cevir (torchaudio
-             yuklemesini bypass — torchcodec catismasi olmaz).
-          2) soundfile ile oku -> torch tensor (channels, samples).
-          3) demucs.apply.apply_model ile 4-stem ayrim (drums/bass/other/vocals).
-          4) vocals stem'i ve diger 3 stem'in toplamini (instrumental) soundfile
-             ile WAV olarak yaz.
+        Steps:
+          1) Convert to 44.1 kHz stereo PCM WAV via an ffmpeg subprocess
+             (bypasses torchaudio.load and the torchcodec conflict).
+          2) Read with soundfile -> torch tensor (channels, samples).
+          3) Run demucs.apply.apply_model for a 4-stem separation
+             (drums / bass / other / vocals).
+          4) Write the vocals stem and the sum of the other three stems
+             (instrumental) as WAV files via soundfile.
 
         Returns:
-            (vocals_path, instrumental_path) — ikisi de work_dir altinda.
+            (vocals_path, instrumental_path) — both inside work_dir.
 
         Raises:
-            RuntimeError: bagimlilik eksik, ffmpeg yukleme hatasi veya model
-                          hatasi.
+            RuntimeError: missing dependency, ffmpeg load error or model error.
         """
         if not self.is_available():
             raise RuntimeError(
-                "Demucs bulunamadi. Yuklemek icin: pip install demucs"
+                "Demucs not available. Install with: pip install demucs"
             )
 
         if not os.path.exists(input_path):
-            raise RuntimeError(f"Girdi bulunamadi: {input_path}")
+            raise RuntimeError(f"Input not found: {input_path}")
 
         if work_dir is None:
             work_dir = tempfile.mkdtemp(prefix="ge_demucs_")
         else:
             os.makedirs(work_dir, exist_ok=True)
 
-        # ── 1) ffmpeg ile 44.1kHz stereo WAV'a normalize et ──────────────
+        # ── 1) ffmpeg → normalize input to 44.1 kHz stereo WAV ───────────
         if progress_cb:
             try:
-                progress_cb(0.05, "Demucs: ses normalize ediliyor...")
+                progress_cb(0.05, "Demucs: normalizing audio...")
             except Exception:
                 pass
 
@@ -172,17 +173,17 @@ class VocalSeparator:
         )
         if r.returncode != 0:
             raise RuntimeError(
-                f"ffmpeg ses normalize hatasi:\n"
+                f"ffmpeg audio normalization failed:\n"
                 f"{r.stderr.decode(errors='replace')[-300:]}"
             )
 
-        # ── 2) soundfile ile yukle → torch tensor ────────────────────────
+        # ── 2) Read via soundfile → torch tensor ─────────────────────────
         import soundfile as sf
         import torch
         import numpy as np
 
         audio_np, sr = sf.read(temp_input, dtype="float32", always_2d=True)
-        # audio_np shape: (samples, channels). Demucs (channels, samples) ister.
+        # audio_np shape: (samples, channels). Demucs expects (channels, samples).
         wav_tensor = torch.from_numpy(np.ascontiguousarray(audio_np.T))  # (C, T)
 
         self._ensure_loaded()
@@ -190,13 +191,13 @@ class VocalSeparator:
         # ── 3) Demucs apply_model ────────────────────────────────────────
         if progress_cb:
             try:
-                progress_cb(0.20, "Demucs: stem ayristirma calisiyor...")
+                progress_cb(0.20, "Demucs: running stem separation...")
             except Exception:
                 pass
 
         from demucs.apply import apply_model
 
-        # Normalizasyon: Demucs eğitiminde standart pratik (mean/std)
+        # Normalization: standard practice during Demucs training (mean/std).
         ref = wav_tensor.mean(0)
         ref_mean = ref.mean()
         ref_std = ref.std() + 1e-8
@@ -215,10 +216,10 @@ class VocalSeparator:
         log.info(f"Demucs inference: {int((time.time() - t_inf))}s, "
                  f"{sources.shape[0]} stems")
 
-        # ── 4) Vocals + instrumental olarak ayir ve soundfile ile yaz ────
+        # ── 4) Split into vocals + instrumental and persist via soundfile ─
         if progress_cb:
             try:
-                progress_cb(0.90, "Demucs: ciktilar yaziliyor...")
+                progress_cb(0.90, "Demucs: writing outputs...")
             except Exception:
                 pass
 
@@ -226,7 +227,7 @@ class VocalSeparator:
         vocals_idx = stem_names.index("vocals")
         vocals = sources[vocals_idx]  # (channels, samples)
 
-        # Instrumental = vocals haric tum stem'lerin toplami
+        # Instrumental = sum of every stem except vocals.
         instrumental = torch.zeros_like(vocals)
         for i, name in enumerate(stem_names):
             if name != "vocals":
@@ -235,11 +236,11 @@ class VocalSeparator:
         vocals_path = os.path.join(work_dir, "vocals.wav")
         instr_path = os.path.join(work_dir, "no_vocals.wav")
 
-        # soundfile (samples, channels) bekler → .T transpose
+        # soundfile expects (samples, channels) — transpose with .T.
         sf.write(vocals_path, vocals.cpu().numpy().T, sr, subtype="PCM_16")
         sf.write(instr_path, instrumental.cpu().numpy().T, sr, subtype="PCM_16")
 
-        # Gecici giris dosyasini sil
+        # Remove the intermediate input file.
         try:
             os.remove(temp_input)
         except OSError:
@@ -247,21 +248,21 @@ class VocalSeparator:
 
         if progress_cb:
             try:
-                progress_cb(1.0, "Demucs: tamam.")
+                progress_cb(1.0, "Demucs: complete.")
             except Exception:
                 pass
 
-        log.info(f"Demucs ayrim tamam: {vocals_path}, {instr_path}")
+        log.info(f"Demucs separation complete: {vocals_path}, {instr_path}")
         return vocals_path, instr_path
 
     # ─────────────────────────────────────────────────────────────────────
-    # TEMIZLIK
+    # CLEANUP
     # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def cleanup(work_dir: str):
-        """Demucs gecici klasorunu siler (vocals/instrumental artik gerekmiyorsa)."""
+        """Remove the Demucs work directory once vocals/instrumental are no longer needed."""
         try:
             shutil.rmtree(work_dir, ignore_errors=True)
         except Exception as e:
-            log.warning(f"Demucs work_dir silinemedi ({work_dir}): {e}")
+            log.warning(f"Failed to remove Demucs work_dir ({work_dir}): {e}")

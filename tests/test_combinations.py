@@ -35,7 +35,7 @@ def main():
     synthesizer = Synthesizer()
 
     # Test edilecek konfigurasyonlar
-    stt_modes = ["cloud_deepgram", "cloud_groq", "local_gpu", "local_cpu"]
+    stt_modes = ["cloud_auto", "local_gpu", "local_cpu"]
     llm_modes = ["online", "offline"]
     tts_modes = ["online", "gpu", "offline"]
 

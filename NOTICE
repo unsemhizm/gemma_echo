@@ -1,0 +1,121 @@
+Gemma Echo
+Copyright 2026 Yusuf Semih Öksüzoğlu
+
+This product includes software developed by the project author and the
+third parties listed below. It is distributed under the Apache License,
+Version 2.0 (see the LICENSE file).
+
+================================================================================
+1. Google Gemma Models
+================================================================================
+
+This project uses Google's Gemma family of models, both via the Gemini API
+(Gemma 4 26B, `gemma-4-26b-a4b-it`) and as a locally executed quantized GGUF
+weight (Gemma 4 Q4_K_M).
+
+Use of Gemma models is governed by the Gemma Terms of Use and the Gemma
+Prohibited Use Policy published by Google:
+
+    Gemma Terms of Use:        https://ai.google.dev/gemma/terms
+    Prohibited Use Policy:     https://ai.google.dev/gemma/prohibited_use_policy
+
+By downloading, distributing, or running this project together with any Gemma
+weight, you agree to comply with these terms. The project author is not
+affiliated with Google LLC; "Gemma" and "Gemini" are trademarks of Google LLC.
+
+================================================================================
+2. Third-Party Components
+================================================================================
+
+This project depends on, and redistributes its source distribution alongside,
+the following third-party Python packages. Each is the property of its
+respective copyright holders and is used under the terms of its own license.
+
+Translation / LLM
+-----------------
+  google-genai                Apache License 2.0   Copyright Google LLC
+  llama-cpp-python            MIT License          Copyright Andrei Betlen
+                              (Python bindings for llama.cpp; used here as a
+                              generic C++ inference engine for GGUF models)
+
+Speech-to-Text
+--------------
+  faster-whisper              MIT License          Copyright Guillaume Klein
+  groq                        Apache License 2.0   Copyright Groq, Inc.
+                              (used only as a cloud accelerator for the
+                              OpenAI Whisper-large-v3 model; optional)
+
+Text-to-Speech
+--------------
+  elevenlabs                  MIT License          Copyright ElevenLabs Inc.
+  Coqui TTS (XTTS-v2)         Mozilla Public License 2.0 / CPML
+                              Copyright Coqui GmbH and contributors
+                              (model weights subject to the Coqui Public Model
+                              License — non-commercial; see Coqui terms)
+
+      TTS Engine Licensing Disclaimer
+      -------------------------------
+      The core orchestration framework of Gemma Echo is licensed under
+      Apache 2.0. However, the default offline TTS engine (Coqui XTTS-v2)
+      uses model weights licensed under the Coqui Public Model License
+      (Non-Commercial). Gemma Echo provides the architecture to integrate
+      any TTS engine. For commercial deployment, users must replace the
+      XTTS-v2 model weights with a commercially permissive alternative
+      (e.g., VITS, Piper) or obtain a commercial license from Coqui GmbH.
+      The Apache 2.0 license of Gemma Echo itself is unaffected.
+
+Audio / Video Processing
+------------------------
+  demucs                      MIT License          Copyright Meta Platforms
+                              (vocal/instrumental separation; used as a CLI
+                              subprocess for dubbing pre-processing)
+  sounddevice                 MIT License          Copyright Matthias Geier
+  webrtcvad-wheels            BSD 3-Clause License Copyright Google / Tom Wilson
+  ffmpeg-python               Apache License 2.0   Copyright Karl Kroening
+  soundcard                   BSD 3-Clause License Copyright Bastian Bechtold
+
+Machine Learning Runtime
+------------------------
+  torch, torchaudio           BSD 3-Clause License Copyright Meta Platforms
+                              and PyTorch contributors
+
+GUI
+---
+  customtkinter               MIT License          Copyright Tom Schimansky
+
+Document Parsing
+----------------
+  pdfplumber                  MIT License          Copyright Jeremy Singer-Vine
+  python-docx                 MIT License          Copyright Steve Canny
+
+Utilities
+---------
+  python-dotenv               BSD 3-Clause License Copyright Saurabh Kumar
+  requests                    Apache License 2.0   Copyright Kenneth Reitz
+                                                   and contributors
+  psutil                      BSD 3-Clause License Copyright Giampaolo Rodola
+  keyboard                    MIT License          Copyright BoppreH
+
+================================================================================
+3. Synthetic Training Data (experimental/)
+================================================================================
+
+The Japanese fine-tuning dataset under `experimental/ja_training_data.jsonl`
+was generated synthetically by the project author using the Google Gemini API.
+It contains no scraped or third-party copyrighted material and is released
+under the same Apache License 2.0 as the rest of this repository.
+
+================================================================================
+4. Audio Samples (samples/)
+================================================================================
+
+The voice samples under `samples/` were recorded by the project author and are
+released under the same Apache License 2.0 as the rest of this repository.
+
+================================================================================
+
+Full license texts for each third-party component are available in the
+distribution of each package and on its public source repository. The
+attribution requirements of each license are satisfied by including this
+NOTICE file together with the LICENSE file in any redistribution of this
+project, as required by the Apache License 2.0.

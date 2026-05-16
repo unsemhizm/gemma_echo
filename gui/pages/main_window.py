@@ -1,8 +1,8 @@
 """
-Gemma Echo — Ana Pencere (Single-Window SPA)
+Gemma Echo — Main window (single-window SPA).
 
-Sidebar tabanlı, modüler tek gövde mimari.
-Tüm görünümler (Görünüm sınıfları) kendi dosyalarında modüler olarak yönetilir.
+Sidebar-driven, modular single-shell architecture. Each view (View class) is
+managed as its own module.
 """
 
 import customtkinter as ctk
@@ -23,7 +23,7 @@ WIN_W, WIN_H = 960, 660
 SIDEBAR_W    = 210
 
 class MainWindow(ctk.CTk):
-    """Tek gövde ana pencere — tüm özelliklerin yönlendiricisi."""
+    """Single-shell main window — the central router for every feature."""
 
     def __init__(self, cfg: ConfigManager, app):
         super().__init__()
@@ -49,16 +49,16 @@ class MainWindow(ctk.CTk):
         self.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
 
     def _build(self):
-        # Sidebar (sol, sabit)
+        # Sidebar (left, fixed width).
         self._sidebar = _Sidebar(self, on_nav=self.switch_view, app=self.app)
         self._sidebar.pack(side="left", fill="y")
 
-        # Dikey ayırıcı
+        # Vertical separator.
         ctk.CTkFrame(self, width=1, fg_color=_C["border"]).pack(
             side="left", fill="y"
         )
 
-        # İçerik alanı (sağ, esnek)
+        # Content area (right, flexible).
         shell = ctk.CTkFrame(self, fg_color=_C["bg"], corner_radius=0)
         shell.pack(side="left", fill="both", expand=True)
 
@@ -72,7 +72,7 @@ class MainWindow(ctk.CTk):
         self.switch_view("live")
 
     def switch_view(self, name: str):
-        # Ayrılınan sayfanın iptal işlemlerini (hook) tetikle
+        # Fire the on-leave hook for the page we are leaving so it can cancel work.
         current_view_name = getattr(self._sidebar, "_active", None)
         if current_view_name and current_view_name in self._views:
             curr_view = self._views[current_view_name]
@@ -152,10 +152,10 @@ class _Sidebar(ctk.CTkFrame):
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).place(relx=0.08, rely=0.78, anchor="w")
 
-        # Ayırıcı
+        # Separator.
         ctk.CTkFrame(self, height=1, fg_color=_C["border"]).pack(fill="x")
 
-        # ── Navigasyon ────────────────────────────────────────────────
+        # ── Navigation ────────────────────────────────────────────────
         nav = ctk.CTkFrame(self, fg_color="transparent")
         nav.pack(fill="x", pady=(8, 0))
 
@@ -181,7 +181,7 @@ class _Sidebar(ctk.CTkFrame):
             btn.pack(fill="x", padx=8, pady=2)
             self._btns[key] = btn
 
-        # ── Alt: Durum ────────────────────────────────────────────────
+        # ── Bottom: status bar ────────────────────────────────────────
         bottom = ctk.CTkFrame(self, fg_color="transparent")
         bottom.pack(side="bottom", fill="x", padx=12, pady=14)
 

@@ -1,7 +1,8 @@
 """
-Sistem donanim tarayicisi.
-OS, RAM, CPU ve GPU bilgilerini tespit eder;
-bu bilgilere gore en uygun calisma profilini onerir.
+System hardware scanner.
+
+Detects the OS, RAM, CPU and GPU specifications and recommends an appropriate
+runtime profile based on those findings.
 """
 
 import platform
@@ -12,7 +13,8 @@ from gui.i18n import t
 
 def _detect_system_gpu() -> tuple:
     """
-    CUDA/MPS bulunamazsa AMD/Intel GPU'yu isletim sistemi araclariyla tespit eder.
+    When CUDA / MPS is unavailable, detect AMD / Intel GPUs via OS-native tooling.
+
     Returns: (gpu_type, gpu_name, vram_gb)
     gpu_type: "amd" | "intel" | "none"
     """
@@ -32,7 +34,7 @@ def _detect_system_gpu() -> tuple:
                 parts = line.split()
                 if not parts:
                     continue
-                # Ilk token RAM (bayt), gerisi kart adi
+                # First token is the RAM in bytes; the remainder is the card name.
                 try:
                     vram_bytes = int(parts[0])
                     gpu_name = " ".join(parts[1:])
@@ -68,8 +70,7 @@ def _detect_system_gpu() -> tuple:
 
 def scan() -> dict:
     """
-    Sistemi tarar ve donanim bilgileri + onerilen profili icerir
-    bir sozluk dondurur.
+    Scan the host system and return hardware information plus a recommended profile.
 
     Returns:
         {
@@ -79,8 +80,8 @@ def scan() -> dict:
             "gpu": {
                 "available": bool,
                 "type":      "cuda" | "mps" | "none",
-                "name":      str,       # bos olabilir
-                "vram_gb":   float,     # sadece cuda'da dolu
+                "name":      str,       # may be empty
+                "vram_gb":   float,     # populated only for CUDA devices
             },
             "recommended_profile": { ... }
         }
@@ -122,13 +123,13 @@ def scan() -> dict:
             gpu["available"] = True
             gpu["type"] = "mps"
             gpu["name"] = "Apple Silicon GPU"
-            # MPS unified memory — RAM ile paylasilir, ayri VRAM yok
+            # MPS uses unified memory — shared with system RAM; there is no dedicated VRAM.
             gpu["vram_gb"] = 0.0
 
     except ImportError:
-        pass  # torch yoksa GPU yok sayilir
+        pass  # torch missing → treat as no GPU.
 
-    # ── CUDA/MPS bulunamazsa AMD/Intel taramasi ──────────────────
+    # ── Fallback AMD / Intel scan when CUDA / MPS is unavailable ────────
     if not gpu["available"]:
         sys_type, sys_name, sys_vram = _detect_system_gpu()
         if sys_type in ("amd", "intel"):
@@ -139,7 +140,7 @@ def scan() -> dict:
 
     info["gpu"] = gpu
 
-    # ── Onerilen Profil ─────────────────────────────────────────
+    # ── Recommended profile ────────────────────────────────────
     info["recommended_profile"] = _recommend(info)
 
     return info
@@ -147,17 +148,16 @@ def scan() -> dict:
 
 def _recommend(info: dict) -> dict:
     """
-    Donanim bilgisine gore en uygun calisma profilini onerير.
+    Recommend the most appropriate runtime profile based on the detected hardware.
 
-    STT / LLM / TTS icin ayri backend + device onerileri uretir.
-    Ayrica hangi Orchestrator modunun baslangic modu olmasi
-    gerektigini de belirler.
+    Emits backend + device recommendations for STT / LLM / TTS independently,
+    and also determines which Orchestrator mode should be used at startup.
     """
     gpu = info["gpu"]
     vram = gpu["vram_gb"]
     gpu_type = gpu["type"]
 
-    # Varsayilan: her sey bulut
+    # Default: fully cloud-based.
     profile = {
         "orchestrator_mode": "online",
         "stt_backend": "cloud_auto",
@@ -172,7 +172,8 @@ def _recommend(info: dict) -> dict:
     # ── CUDA (NVIDIA) ────────────────────────────────────────────
     if gpu_type == "cuda":
         if vram >= 6.0:
-            # Yeterli VRAM: STT + TTS GPU; LLM bulut (Gemma yarismasi geregi)
+            # Sufficient VRAM: STT + TTS on GPU; LLM stays in the cloud
+            # (per the Gemma competition baseline).
             profile.update({
                 "orchestrator_mode": "interactive",
                 "stt_backend": "local_gpu",
@@ -184,7 +185,7 @@ def _recommend(info: dict) -> dict:
                 "reason": t("reason_nvidia_high", vram),
             })
         elif vram >= 3.0:
-            # Sinirli VRAM: sadece STT GPU, TTS ve LLM online
+            # Limited VRAM: only STT on the GPU; LLM and TTS stay online.
             profile.update({
                 "orchestrator_mode": "online_local_stt",
                 "stt_backend": "local_gpu",
@@ -196,7 +197,7 @@ def _recommend(info: dict) -> dict:
                 "reason": t("reason_nvidia_med", vram),
             })
         else:
-            # Dusuk VRAM: tum islemler bulut
+            # Insufficient VRAM: every component runs in the cloud.
             profile.update({
                 "orchestrator_mode": "online",
                 "reason": t("reason_nvidia_low", vram),
@@ -215,9 +216,9 @@ def _recommend(info: dict) -> dict:
             "reason": t("reason_mps"),
         })
 
-    # ── AMD / Intel (CUDA destegi yok) ───────────────────────────
+    # ── AMD / Intel (no CUDA support) ────────────────────────────
     elif gpu_type in ("amd", "intel"):
-        # torch-directml kuruluysa Whisper AMD/Intel uzerinde calisabilir
+        # Whisper can run on AMD / Intel when torch-directml is installed.
         has_directml = False
         try:
             import torch_directml  # noqa: F401
@@ -244,7 +245,7 @@ def _recommend(info: dict) -> dict:
                 "reason": t("reason_no_cuda", gpu_label),
             })
 
-    # ── CPU Yalniz ───────────────────────────────────────────────
+    # ── CPU-only ─────────────────────────────────────────────────
     else:
         profile.update({
             "orchestrator_mode": "online",
@@ -255,12 +256,12 @@ def _recommend(info: dict) -> dict:
 
 
 def summary(info: dict) -> str:
-    """Insan okunakli tarama ozeti."""
+    """Return a human-readable summary of the scan results."""
     gpu = info["gpu"]
     lines = [
-        f"  Isletim Sistemi : {info['os'].upper()}",
+        f"  Operating System: {info['os'].upper()}",
         f"  RAM             : {info['ram_gb']} GB",
-        f"  CPU Cekirdek    : {info['cpu_cores']}",
+        f"  CPU Cores       : {info['cpu_cores']}",
     ]
     if gpu["available"]:
         vram_str = f" | {gpu['vram_gb']} GB VRAM" if gpu["vram_gb"] > 0 else ""
@@ -270,15 +271,15 @@ def summary(info: dict) -> str:
                 import torch_directml  # noqa: F401
                 cuda_note = " [DirectML]"
             except ImportError:
-                cuda_note = " [CUDA destegi yok — online mod]"
+                cuda_note = " [no CUDA support — online mode]"
         lines.append(f"  GPU             : {gpu['name']} ({gpu['type'].upper()}){vram_str}{cuda_note}")
     else:
-        lines.append("  GPU             : Yok (CPU modu)")
+        lines.append("  GPU             : None (CPU mode)")
 
     p = info["recommended_profile"]
     lines += [
         "",
-        f"  Onerilen Mod    : {p['orchestrator_mode'].upper()}",
-        f"  Aciklama        : {p['reason']}",
+        f"  Recommended Mode: {p['orchestrator_mode'].upper()}",
+        f"  Rationale       : {p['reason']}",
     ]
     return "\n".join(lines)

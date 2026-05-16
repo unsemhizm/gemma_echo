@@ -1,5 +1,5 @@
 """
-Gemma Echo — Ayarlar Ekranı (Settings View)
+Gemma Echo — Settings view.
 """
 
 import webbrowser
@@ -46,7 +46,7 @@ class SettingsView(ctk.CTkFrame):
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=24, pady=(0, 12))
 
-        # ── Calisma Modu ──────────────────────────────────────────────
+        # ── Runtime mode ──────────────────────────────────────────────
         mode_card = _card(body, t("modes"))
 
         mode_hdr = ctk.CTkFrame(mode_card, fg_color="transparent")
@@ -71,10 +71,10 @@ class SettingsView(ctk.CTkFrame):
         self._mode_combo.set(mode_vals[cur_idx])
         self._mode_combo.pack(fill="x")
 
-        # ── Ozel Mod Secimi ───────────────────────────────────────────
+        # ── Custom backend mix ────────────────────────────────────────
         custom_card = _card(body, t("settings"))
 
-        # STT satiri
+        # STT row.
         stt_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
         stt_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
@@ -94,7 +94,7 @@ class SettingsView(ctk.CTkFrame):
         self._stt_seg.set(stt_cur)
         self._stt_seg.pack(fill="x", pady=(0, 8))
 
-        # LLM satiri
+        # LLM row.
         llm_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
         llm_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
@@ -114,7 +114,7 @@ class SettingsView(ctk.CTkFrame):
         self._llm_seg.set(llm_cur)
         self._llm_seg.pack(fill="x", pady=(0, 8))
 
-        # TTS satiri
+        # TTS row.
         tts_hdr = ctk.CTkFrame(custom_card, fg_color="transparent")
         tts_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
@@ -134,7 +134,7 @@ class SettingsView(ctk.CTkFrame):
         self._tts_seg.set(tts_cur)
         self._tts_seg.pack(fill="x", pady=(0, 8))
 
-        # Uygula butonu
+        # Apply button.
         ctk.CTkButton(
             custom_card, text=t("apply"),
             height=34, corner_radius=10,
@@ -143,19 +143,19 @@ class SettingsView(ctk.CTkFrame):
             command=self._apply_custom_mode
         ).pack(fill="x")
 
-        # ── Yayıncı / İçerik Üretici Modu ──────────────────────────────
+        # ── Broadcaster / content-creator mode ─────────────────────────
         broad_card = _card(body, t("nav_media"))
-        
+
         broad_hdr = ctk.CTkFrame(broad_card, fg_color="transparent")
         broad_hdr.pack(fill="x", pady=(0, 6))
-        
+
         ctk.CTkLabel(
             broad_hdr, text=f"{t('broadcaster_mode')}:",
             font=ctk.CTkFont(size=11), text_color=_C["muted"]
         ).pack(side="left")
         _InfoIcon(broad_hdr, t("tip_broadcaster")).pack(side="left", padx=(4, 0))
 
-        # Toggle ve Dropdown satırı
+        # Toggle + dropdown row.
         broad_row = ctk.CTkFrame(broad_card, fg_color="transparent")
         broad_row.pack(fill="x", pady=(4, 0))
 
@@ -168,10 +168,10 @@ class SettingsView(ctk.CTkFrame):
             self._broad_switch.select()
         self._broad_switch.pack(side="left", padx=(0, 20))
 
-        # Cihaz listesi
+        # Device list.
         devices = self._get_output_devices()
         device_names = [d[1] for d in devices]
-        
+
         self._device_combo = ctk.CTkComboBox(
             broad_row, values=device_names,
             height=34, corner_radius=10, font=ctk.CTkFont(size=11),
@@ -179,7 +179,7 @@ class SettingsView(ctk.CTkFrame):
             width=300,
             command=self._on_device_select
         )
-        
+
         cur_dev_name = self.cfg.get("broadcaster", "output_device_name", default="Default")
         self._device_combo.set(cur_dev_name)
         self._device_combo.pack(side="left", fill="x", expand=True)
@@ -190,7 +190,7 @@ class SettingsView(ctk.CTkFrame):
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).pack(anchor="w", pady=(8, 0))
 
-        # ── Donanim bilgisi ───────────────────────────────────────────
+        # ── Hardware information ──────────────────────────────────────
         hw_card = _card(body, t("hardware_profile"))
         hw      = self.cfg.get("hardware") or {}
         gpu_n   = hw.get("gpu", {}).get("name", "CPU")
@@ -202,7 +202,7 @@ class SettingsView(ctk.CTkFrame):
             font=ctk.CTkFont(size=11), text_color=_C["muted"], anchor="w"
         ).pack(anchor="w")
 
-        # ── API Anahtarlari ───────────────────────────────────────────
+        # ── API keys ──────────────────────────────────────────────────
         api_card = _card(body, t("api_keys"))
         for svc, lbl, url in [
             ("gemini",     "Gemini",     "https://aistudio.google.com/apikey"),
@@ -211,7 +211,7 @@ class SettingsView(ctk.CTkFrame):
         ]:
             self._api_row(api_card, svc, lbl, url)
 
-        # ── ElevenLabs Ses ────────────────────────────────────────────
+        # ── ElevenLabs voice ──────────────────────────────────────────
         voice_card = _card(body, t("elevenlabs_voice_id_label"))
         vr = ctk.CTkFrame(voice_card, fg_color="transparent")
         vr.pack(fill="x")
@@ -238,7 +238,7 @@ class SettingsView(ctk.CTkFrame):
             command=self._save_voice
         ).pack(side="left")
 
-        # ── Overlay Opakligi ──────────────────────────────────────────
+        # ── Overlay opacity ───────────────────────────────────────────
         ovl_card = _card(body, t("overlay_title"))
         op_row = ctk.CTkFrame(ovl_card, fg_color="transparent")
         op_row.pack(fill="x")
@@ -262,7 +262,7 @@ class SettingsView(ctk.CTkFrame):
         )
         self._op_lbl.pack(side="left")
 
-        # VAD hassasiyet
+        # VAD aggressiveness.
         vad_row = ctk.CTkFrame(ovl_card, fg_color="transparent")
         vad_row.pack(fill="x", pady=(10, 0))
 
@@ -282,7 +282,7 @@ class SettingsView(ctk.CTkFrame):
         self._vad_seg.set(cur_vad)
         self._vad_seg.pack(side="left", padx=12)
 
-        # ── Çeviri Karakteri (Persona) ────────────────────────────────────────
+        # ── Translation persona ───────────────────────────────────────────────
         persona_card = _card(body, t("persona_title"))
 
         persona_hdr = ctk.CTkFrame(persona_card, fg_color="transparent")
@@ -314,8 +314,8 @@ class SettingsView(ctk.CTkFrame):
         self._persona_combo.set(persona_vals[cur_persona_idx])
         self._persona_combo.pack(fill="x")
 
-        # ── Çeviri Dili ───────────────────────────────────────────────
-        lang_card = _card(body, t("translation_language") if "translation_language" in dir() else "Çeviri Dili")
+        # ── Translation language ──────────────────────────────────────
+        lang_card = _card(body, t("translation_language") if "translation_language" in dir() else "Translation language")
 
         lang_names = [f"{o[2]}  ({o[1]})" for o in self._LANG_OPTIONS]
 
@@ -353,10 +353,10 @@ class SettingsView(ctk.CTkFrame):
         self._tgt_lang_combo.set(lang_names[cur_tgt_idx])
         self._tgt_lang_combo.pack(side="left", fill="x", expand=True)
 
-        # ── Ses Cihazlari ─────────────────────────────────────────────
-        dev_card = _card(body, "Ses Cihazlari")
+        # ── Audio devices ─────────────────────────────────────────────
+        dev_card = _card(body, "Audio Devices")
 
-        # Mikrofon satirı
+        # Microphone row.
         mic_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
         mic_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
@@ -376,7 +376,7 @@ class SettingsView(ctk.CTkFrame):
         self._mic_combo.set(cur_mic_name if cur_mic_name in mic_names else mic_names[0])
         self._mic_combo.pack(fill="x", pady=(0, 10))
 
-        # Loopback (karsi taraf) satirı
+        # Loopback (counterpart) row.
         loop_hdr = ctk.CTkFrame(dev_card, fg_color="transparent")
         loop_hdr.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
@@ -403,7 +403,7 @@ class SettingsView(ctk.CTkFrame):
             font=ctk.CTkFont(size=9), text_color=_C["dim"]
         ).pack(anchor="w")
 
-        # Tus Atama satirlari
+        # Hotkey assignment rows.
         sep = ctk.CTkFrame(dev_card, fg_color=_C["border"], height=1)
         sep.pack(fill="x", pady=(12, 10))
 
@@ -412,7 +412,7 @@ class SettingsView(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"), text_color=_C["text"], anchor="w"
         ).pack(anchor="w", pady=(0, 6))
 
-        # Outbound tusu
+        # Outbound hotkey.
         out_row = ctk.CTkFrame(dev_card, fg_color="transparent")
         out_row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
@@ -430,7 +430,7 @@ class SettingsView(ctk.CTkFrame):
         )
         self._hotkey_out_entry.pack(side="left")
 
-        # Inbound tusu
+        # Inbound hotkey.
         in_row = ctk.CTkFrame(dev_card, fg_color="transparent")
         in_row.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
@@ -456,7 +456,7 @@ class SettingsView(ctk.CTkFrame):
             command=self._save_hotkeys
         ).pack(fill="x")
 
-        # ── UI Language Switcher ──────────────────────────────────────
+        # ── UI language switcher ──────────────────────────────────────
         lang_card = _card(body, t("ui_language_setting"))
         lang_row = ctk.CTkFrame(lang_card, fg_color="transparent")
         lang_row.pack(fill="x")
@@ -471,7 +471,7 @@ class SettingsView(ctk.CTkFrame):
         self._lang_seg.set(self.cfg.get("language", "ui_language", default="tr"))
         self._lang_seg.pack(fill="x")
 
-    # ── Yardimci: API satiri ──────────────────────────────────────────────────
+    # ── Helper: a single API key row ──────────────────────────────────────────
 
     def _api_row(self, parent, svc: str, lbl: str, url: str):
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -504,7 +504,7 @@ class SettingsView(ctk.CTkFrame):
             command=lambda s=svc, e=entry: self.cfg.set_api_key(s, e.get().strip())
         ).pack(side="left")
 
-    # ── Olaylar ───────────────────────────────────────────────────────────────
+    # ── Events ────────────────────────────────────────────────────────────────
 
     def _on_mode(self, display: str):
         key = next((m[0] for m in self._MODES if t(m[1]) == display), None)
@@ -533,7 +533,7 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.set("mode", "tts", "backend", tts)
         self.cfg.save()
 
-        # Combo'yu "custom" olarak guncelle
+        # Update the combo to "custom".
         custom_display = next(
             (t(m[1]) for m in self._MODES if m[0] == "custom"), None
         )
@@ -548,7 +548,7 @@ class SettingsView(ctk.CTkFrame):
             self.cfg.set_voice(vid)
 
     def _get_output_devices(self):
-        """Sistemdeki ses cikis cihazlarini listeler."""
+        """List the system's audio output devices."""
         import sounddevice as sd
         try:
             devices = sd.query_devices()
@@ -558,11 +558,11 @@ class SettingsView(ctk.CTkFrame):
                     outputs.append((i, d['name']))
             return outputs
         except Exception as e:
-            print(f"[HATA] Ses cihazlari listelenemedi: {e}")
+            print(f"[ERROR] Could not enumerate audio output devices: {e}")
             return [(None, t("default_device"))]
 
     def _get_input_devices(self):
-        """Sistemdeki mikrofon (giris) cihazlarini listeler."""
+        """List the system's microphone (input) devices."""
         import sounddevice as sd
         try:
             devices = sd.query_devices()
@@ -571,24 +571,24 @@ class SettingsView(ctk.CTkFrame):
                 if d['max_input_channels'] > 0:
                     try:
                         ha = sd.query_hostapis(d['hostapi'])
-                        # Sadece WASAPI ve MME cihazlarini goster (WDM-KS gizle — karsasiklik cikarir)
+                        # Surface only WASAPI and MME devices (hide WDM-KS — it confuses users).
                         if ha['name'] in ('Windows WASAPI', 'MME'):
                             inputs.append((i, d['name']))
                     except Exception:
                         pass
             return inputs
         except Exception as e:
-            print(f"[HATA] Mikrofon listelenemedi: {e}")
+            print(f"[ERROR] Could not enumerate microphones: {e}")
             return [(None, t("default_device"))]
 
     def _get_loopback_devices(self):
-        """WASAPI Loopback cihazlarini listeler (soundcard kullanir)."""
+        """List WASAPI loopback devices (uses soundcard)."""
         try:
             import soundcard as sc
             loopbacks = [m for m in sc.all_microphones(include_loopback=True) if m.isloopback]
             return [(m.id, m.name) for m in loopbacks]
         except Exception as e:
-            print(f"[HATA] Loopback cihazlari listelenemedi: {e}")
+            print(f"[ERROR] Could not enumerate loopback devices: {e}")
             return []
 
     def _on_broadcaster_toggle(self):
@@ -596,7 +596,7 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.set("broadcaster", "enabled", bool(enabled))
         self.cfg.save()
 
-        # Synthesizer'i guncelle (backend hazir degilse atla)
+        # Update the synthesizer (skip if the backend is not ready yet).
         if not self.app._orchestrator:
             return
         if enabled:
@@ -616,7 +616,7 @@ class SettingsView(ctk.CTkFrame):
             self.app._orchestrator.synthesizer.set_output_device(idx)
 
     def _on_mic_select(self, name: str):
-        """Secilen mikrofonu config'e kaydet."""
+        """Persist the selected microphone to config."""
         devices = self._get_input_devices()
         idx = next((d[0] for d in devices if d[1] == name), None)
         self.cfg.set("recording", "mic_device_index", idx)
@@ -624,12 +624,12 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.save()
 
     def _on_loopback_select(self, name: str):
-        """Secilen loopback cihazini config'e kaydet."""
+        """Persist the selected loopback device to config."""
         self.cfg.set("inbound", "loopback_device_name", name)
         self.cfg.save()
 
     def _save_hotkeys(self):
-        """Girilen tuslari config'e kaydet ve aninda yeniden kaydet."""
+        """Persist the configured hotkeys and re-register them immediately."""
         key_out = self._hotkey_out_entry.get().strip().lower()
         key_in  = self._hotkey_in_entry.get().strip().lower()
 
@@ -647,7 +647,7 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.set("inbound", "hotkey_inbound",  key_in)
         self.cfg.save()
 
-        # Backend hazirsa hotkey'leri aninda yeniden kaydet
+        # Re-register the hotkeys immediately if the backend is ready.
         if self.app._backend_ready:
             self.app._reregister_hotkeys(key_out, key_in)
 
@@ -655,12 +655,12 @@ class SettingsView(ctk.CTkFrame):
         key = next((p[0] for p in options if t(p[1]) == display), "default")
         self.cfg.set("persona", key)
         self.cfg.save()
-        # Canlı güncelleme: orkestra hazırsa anında translator'a bildir
+        # Live update: when the orchestra is ready, push the change through to the translator.
         if self.app._orchestrator:
             self.app._orchestrator.translator.set_persona(key)
 
     def _on_lang_change(self, direction: str, display: str):
-        """Kaynak veya hedef çeviri dilini değiştirir."""
+        """Change the source or target translation language."""
         opt = next((o for o in self._LANG_OPTIONS if f"{o[2]}  ({o[1]})" == display), None)
         if not opt:
             return
@@ -680,7 +680,7 @@ class SettingsView(ctk.CTkFrame):
         self.cfg.set("language", "ui_language", lang)
         self.cfg.save()
 
-        # Rebuild MainWindow dynamically
+        # Rebuild MainWindow dynamically.
         main_win = self.app._main
         if main_win:
             for child in main_win.winfo_children():

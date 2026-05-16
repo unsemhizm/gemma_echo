@@ -13,11 +13,8 @@ def test_multiple_audio():
     
     # Test edilecek 5 dosya 
     audio_files = [
-        "audio/Kayıt.wav",
-        "audio/Kayıt (2).wav",
-        "audio/Kayıt (3).wav",
-        "audio/Kayıt (4).wav",
-        "audio/Kayıt (5).wav"
+        "samples/sample_audio_1.wav",
+        "samples/sample_audio_2.wav",
     ]
 
     print("\n" + "="*50)

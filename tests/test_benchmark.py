@@ -65,10 +65,10 @@ def run_pipeline_test(transcriber, translator, synthesizer, audio_path, iteratio
 def test_benchmark_online(components):
     transcriber, translator, synthesizer = components
     # Dosya isimlerinin dogrulugundan emin ol (Kucuk/Buyuk harf duyarlidir)
-    audio_files = ["audio/Kayıt.wav", "audio/Kayıt (2).wav", "audio/Kayıt (3).wav"]
+    audio_files = ["samples/sample_audio_1.wav", "samples/sample_audio_2.wav"]
 
     print("\n" + "="*70)
-    print("   ONLINE PIPELINE LATENCY BENCHMARK (BULUT MODU - 3 ORNEK)")
+    print("   ONLINE PIPELINE LATENCY BENCHMARK (BULUT MODU - 2 ORNEK)")
     print("="*70)
 
     translator.set_mode("online")
@@ -82,10 +82,10 @@ def test_benchmark_online(components):
 
 def test_benchmark_offline(components):
     transcriber, translator, synthesizer = components
-    audio_files = ["audio/Kayıt.wav", "audio/Kayıt (2).wav", "audio/Kayıt (3).wav"]
+    audio_files = ["samples/sample_audio_1.wav", "samples/sample_audio_2.wav"]
 
     print("\n" + "="*70)
-    print("   OFFLINE PIPELINE LATENCY BENCHMARK (YEREL MOD - 3 ORNEK)")
+    print("   OFFLINE PIPELINE LATENCY BENCHMARK (YEREL MOD - 2 ORNEK)")
     print("="*70)
 
     translator.set_mode("offline")

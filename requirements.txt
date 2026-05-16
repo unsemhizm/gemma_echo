@@ -3,7 +3,7 @@
 
 # ── STT ──────────────────────────────────────────────────────
 faster-whisper==1.2.1
-groq==1.2.0                # Groq Whisper STT + LLM (Katman 3 fallback)
+groq==1.2.0                # Groq-hosted Whisper-large-v3 (cloud STT acceleration; optional)
 
 # ── LLM (Online) ─────────────────────────────────────────────
 google-genai==1.73.1       # Gemini API (Gemma 4 26B + Flash 2.5)
@@ -22,24 +22,27 @@ elevenlabs==2.44.0         # ElevenLabs (online TTS)
 # ── Audio / VAD ──────────────────────────────────────────────
 sounddevice==0.5.5
 webrtcvad-wheels==2.0.14
+# Demucs: dublaj on-islemesi icin vokal/enstrumental ayrim (Meta, MIT lisans).
+# CLI subprocess olarak kullaniliyor (pipeline/vocal_separator.py).
+demucs==4.0.1
 
 # ── ML / CUDA ────────────────────────────────────────────────
 torch==2.11.0+cu130
 torchaudio==2.11.0+cu130
 
 # ── GUI ──────────────────────────────────────────────────────
-customtkinter>=5.2.2       # Modern Tkinter arayüzü
-psutil>=5.9.0              # RAM/CPU donanım bilgisi
-ffmpeg-python>=0.2.0       # Video → WAV ses ayıklama (sistem ffmpeg gerektirir)
+customtkinter==5.2.2       # Modern Tkinter arayüzü
+psutil==7.2.2              # RAM/CPU donanım bilgisi
+ffmpeg-python==0.2.0       # Video → WAV ses ayıklama (sistem ffmpeg gerektirir)
 
 # ── Belge Okuma (FAZ 4 — Kitap Cevirisi) ─────────────────────
-pdfplumber>=0.10.0         # PDF okuma (document_translator.py)
-python-docx>=1.1.0         # DOCX okuma (document_translator.py)
+pdfplumber==0.11.9         # PDF okuma (document_translator.py)
+python-docx==1.2.0         # DOCX okuma (document_translator.py)
 # ebooklib>=0.18           # EPUB destegi — opsiyonel, ikinci asama
 
 # ── Opsiyonel (ozellik bazli) ────────────────────────────────
-keyboard>=0.13.5           # global hotkeys (gui/app.py — yoksa uyari)
-soundcard>=0.4.6           # WASAPI loopback inbound (stt/recorder.py — yoksa uyari)
+keyboard==0.13.5           # global hotkeys (gui/app.py — yoksa uyari)
+soundcard==0.4.6           # WASAPI loopback inbound (stt/recorder.py — yoksa uyari)
 
 # ── Yardımcı ─────────────────────────────────────────────────
 python-dotenv==1.2.2

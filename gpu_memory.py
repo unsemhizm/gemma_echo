@@ -1,9 +1,11 @@
 """
-Hafif VRAM yardımcıları — torch.cuda.mem_get_info() (nvidia-smi yok).
-Ön kontrol + OOM sonrası temizlik için ortak kullanım.
+Lightweight VRAM helpers backed by ``torch.cuda.mem_get_info()`` (no
+``nvidia-smi`` dependency). Shared across the project for both pre-load
+capacity checks and post-OOM reclamation.
 
-Eşikler (VRAM_MIN_FREE_*) yalnızca bu dosyada tanımlıdır; farklı kuantizasyon
-(Q4 / Q8), n_gpu_layers veya donanım profili için buradan ince ayar yapın.
+The ``VRAM_MIN_FREE_*`` thresholds are defined here exclusively; tune them
+in this file when switching quantization (Q4 / Q8), changing ``n_gpu_layers``
+or targeting a different hardware profile.
 """
 
 from __future__ import annotations
@@ -18,29 +20,30 @@ except ImportError:
 
 
 class VramThresholds(NamedTuple):
-    """Yükleme öncesi 'en az bu kadar boş VRAM olmalı' eşikleri (byte).
+    """Minimum-free-VRAM thresholds (in bytes) required before loading a model.
 
-    Varsayılanlar: gemma-4-q4.gguf tam GPU + XTTS-v2 GPU için tutucu pay.
-    Daha küçük quant veya kısmi GPU katmanı kullanıyorsanız değerleri düşürün.
+    Defaults are tuned to safely host ``gemma-4-q4.gguf`` fully on the GPU
+    alongside the XTTS-v2 GPU runtime, with a conservative headroom margin.
+    Lower the values when using a smaller quant or only partial GPU layers.
     """
 
     local_llm: int
     xtts_gpu: int
 
 
-# Tek kaynak — orchestrator / translator / synthesizer bu sabitleri kullanır
+# Single source of truth — consumed by the orchestrator, translator and synthesizer.
 VRAM_THRESHOLDS = VramThresholds(
     local_llm=3 * 1024 * 1024 * 1024,
     xtts_gpu=3 * 1024 * 1024 * 1024,
 )
 
-# Geriye dönük isimler (import eden kod)
+# Backwards-compatible aliases for existing callers.
 MIN_FREE_BYTES_LOCAL_LLM = VRAM_THRESHOLDS.local_llm
 MIN_FREE_BYTES_XTTS_GPU = VRAM_THRESHOLDS.xtts_gpu
 
 
 def cuda_free_bytes() -> Optional[int]:
-    """Boş VRAM baytı; CUDA yoksa None."""
+    """Return the number of free VRAM bytes, or ``None`` when CUDA is unavailable."""
     if torch is None or not torch.cuda.is_available():
         return None
     free, _total = torch.cuda.mem_get_info()
@@ -48,7 +51,7 @@ def cuda_free_bytes() -> Optional[int]:
 
 
 def vram_sufficient_for_llm() -> Tuple[bool, Optional[int]]:
-    """Yerel GGUF (tam GPU varsayımı) için kaba ön kontrol."""
+    """Coarse pre-flight check for loading the local GGUF (assumes full-GPU placement)."""
     free = cuda_free_bytes()
     if free is None:
         return True, None
@@ -56,7 +59,7 @@ def vram_sufficient_for_llm() -> Tuple[bool, Optional[int]]:
 
 
 def vram_sufficient_for_xtts_gpu() -> Tuple[bool, Optional[int]]:
-    """XTTS-v2 GPU yüklemesi için kaba ön kontrol."""
+    """Coarse pre-flight check for loading XTTS-v2 onto the GPU."""
     free = cuda_free_bytes()
     if free is None:
         return True, None
@@ -64,7 +67,7 @@ def vram_sufficient_for_xtts_gpu() -> Tuple[bool, Optional[int]]:
 
 
 def is_cuda_oom_error(exc: BaseException) -> bool:
-    """RuntimeError / torch OOM mesajlarını sezgisel eşle."""
+    """Heuristically classify a raised exception as a CUDA out-of-memory error."""
     name = type(exc).__name__
     msg = str(exc).lower()
     if "outofmemoryerror" in name:
@@ -77,13 +80,13 @@ def is_cuda_oom_error(exc: BaseException) -> bool:
 
 
 def cleanup_cuda_memory() -> None:
-    """Belleği mümkün olduğunca CUDA önbelleğinden ve GC heap'inden serbest bırak.
+    """Release as much memory as possible from the CUDA cache and the GC heap.
 
-    Sıra: önce ``gc.collect()`` (Python nesneleri ve son referanslar), ardından
-    bekleyen CUDA işlerinin bitmesi için ``synchronize()``, sonra
-    ``torch.cuda.empty_cache()`` — PyTorch ayrılan bloğu hemen OS'e iade etmese
-    bile önbelleği küçültür; arka arkaya yükleme sonrası ``mem_get_info`` için
-    daha az yanıltıcı sonuç verir.
+    Sequence: first ``gc.collect()`` to drop lingering Python references, then
+    ``synchronize()`` so that any in-flight CUDA work completes, and finally
+    ``torch.cuda.empty_cache()`` — even though PyTorch does not immediately
+    return the freed blocks to the OS, shrinking the cache produces a far
+    more reliable ``mem_get_info`` reading for back-to-back model loads.
     """
     gc.collect()
     if torch is not None and torch.cuda.is_available():

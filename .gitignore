@@ -1,5 +1,6 @@
 # ── Ortam / Bağımlılıklar ─────────────────────────────────────
 venv/
+.venv/
 __pycache__/
 **/__pycache__/
 *.pyc
@@ -16,6 +17,7 @@ config.json
 *.bin
 *.pt
 *.safetensors
+*.log
 models/
 
 # ── Ses / Video Çıktıları ────────────────────────────────────
@@ -36,8 +38,10 @@ models/
 tmp/
 temp/
 
-# ── IDE / OS ─────────────────────────────────────────────────
+# ── IDE / OS / AI Asistanları ────────────────────────────────
 .vscode/
 .idea/
+.claude/
+.windsurf/
 *.DS_Store
 Thumbs.db
