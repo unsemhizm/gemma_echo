@@ -14,7 +14,7 @@ Gemma Echo, konuşulan Türkçeyi yazıya döken, kendi kendini onaran bir model
 
 ▶️ **[YouTube'da İzle](https://www.youtube.com/watch?v=1FU11A3G6ig)**
 
-> 🧠 **Jüriye not:** Tanıtım videosu Türkçe çekildi. **Videoda duyduğunuz İngilizce dublaj ve gördüğünüz sinematik altyazılar tamamen Gemma Echo'nun kendisi tarafından**, tüketici donanımı üzerinde yerel olarak üretildi. Proje kelimenin tam anlamıyla kendi kendini sunuyor.
+> 🧠 ** not:** Tanıtım videosu Türkçe çekildi. **Videoda duyduğunuz İngilizce dublaj ve gördüğünüz sinematik altyazılar tamamen Gemma Echo'nun kendisi tarafından**, tüketici donanımı üzerinde yerel olarak üretildi. Proje kelimenin tam anlamıyla kendi kendini sunuyor.
 
 ---
 
@@ -25,6 +25,7 @@ Gemma Echo, konuşulan Türkçeyi yazıya döken, kendi kendini onaran bir model
 > Şu an için **resmî olarak desteklenen tek konfigürasyon** budur. Proje, uçtan uca yalnızca bu yığın üzerinde geliştirildi ve doğrulandı.
 >
 > Linux ve macOS **şu anda test edilmemiştir** ve manuel uyarlama gerektirebilir:
+>
 > - **Linux + NVIDIA:** `libportaudio2` / `libasound2-dev` kurulduktan ve uygun `torch` CUDA wheel'i seçildikten sonra büyük olasılıkla çalışır; WASAPI loopback kaydedici (sistem sesi yakalama) yalnızca Windows'a özgüdür.
 > - **macOS (Apple Silicon):** çıkarım cihazını `cuda`'dan `mps`'e geçirmeyi, `llama-cpp-python`'u `CMAKE_ARGS="-DLLAMA_METAL=on"` ile derlemeyi ve Tcl/Tk kurmayı (`brew install python-tk`) gerektirir; yazar tarafından test edilmemiştir.
 > - **macOS (Intel) / NVIDIA'sız Linux:** Yalnızca CPU modu mümkündür ama yavaştır; `requirements.txt` içindeki `torch==2.11.0+cu130` uygun bir CUDA-dışı wheel ile değiştirilmelidir.
@@ -37,13 +38,13 @@ Gemma Echo, konuşulan Türkçeyi yazıya döken, kendi kendini onaran bir model
 
 Gemma Echo, çok modlu bir çeviri paketidir. Aşağıda açıklanan kademeli yapı, ana arayüzden erişilebilen **beş** farklı iş akışını besler:
 
-| Mod | Girdi | Çıktı | Kullanım Alanı |
-|-----|-------|-------|----------------|
-| 🎙️ **Canlı** | Mikrofon (push-to-talk veya VAD) veya sistem loopback (WASAPI) | Akış halinde metin + klonlanmış ses | Gerçek zamanlı sohbet, toplantı, canlı görüşme |
-| 🎬 **Medya — Dublaj** | Video dosyası (MP4, MKV, MOV, AVI, WebM) | Konuşmacının klonlanmış sesiyle dublajlı video | Türkçe videoları İngilizce yeniden seslendirme |
-| 📝 **Medya — Altyazı** | Video dosyası | Yumuşak `.srt` izi veya sert (yakılmış) sinematik altyazı | YouTube yükleme, erişilebilirlik, teslimat |
-| 📄 **Kitap / Belge** | PDF, DOCX, TXT | Çevrilmiş `.txt` (opsiyonel olarak biçim koruyan `.docx`) | Akademik makaleler, kitaplar, uzun belgeler |
-| 📁 **Dosya / Metin** | Ses/video dosyası veya yapıştırılan metin | Çevrilmiş transkript | Toplu transkripsiyon, hızlı metin çevirisi |
+| Mod                    | Girdi                                                          | Çıktı                                                     | Kullanım Alanı                                 |
+| ---------------------- | -------------------------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------- |
+| 🎙️ **Canlı**           | Mikrofon (push-to-talk veya VAD) veya sistem loopback (WASAPI) | Akış halinde metin + klonlanmış ses                       | Gerçek zamanlı sohbet, toplantı, canlı görüşme |
+| 🎬 **Medya — Dublaj**  | Video dosyası (MP4, MKV, MOV, AVI, WebM)                       | Konuşmacının klonlanmış sesiyle dublajlı video            | Türkçe videoları İngilizce yeniden seslendirme |
+| 📝 **Medya — Altyazı** | Video dosyası                                                  | Yumuşak `.srt` izi veya sert (yakılmış) sinematik altyazı | YouTube yükleme, erişilebilirlik, teslimat     |
+| 📄 **Kitap / Belge**   | PDF, DOCX, TXT                                                 | Çevrilmiş `.txt` (opsiyonel olarak biçim koruyan `.docx`) | Akademik makaleler, kitaplar, uzun belgeler    |
+| 📁 **Dosya / Metin**   | Ses/video dosyası veya yapıştırılan metin                      | Çevrilmiş transkript                                      | Toplu transkripsiyon, hızlı metin çevirisi     |
 
 Beş mod da aynı kendi kendini onaran çeviri kademesini (Kültürel Harita → Gemma 4 Bulut → Gemini 2.5 Flash → Gemma 4 Q4 yerel) paylaşır ve bulut ile çevrimdışı çalışma arasında saydam biçimde geçiş yapar.
 
@@ -83,12 +84,12 @@ Ses Çıkışı / Dublajlı Video
 
 ## 🧠 Kendi Kendini Onaran Model Kademesi
 
-| Katman | Model | Sağlayıcı | Tetikleyici |
-|--------|-------|-----------|-------------|
-| 0 | Kültürel Harita (130 girdi × 7 dil) | Yerel | Kaynak dilde deyim tespit edildiğinde |
-| 1 | Gemma 4 26B (`gemma-4-26b-a4b-it`) | Gemini API | Varsayılan çevrimiçi yol |
-| 2 | Gemini 2.5 Flash | Gemini API | Katman 1 zaman aşımı / hatası |
-| 3 | Gemma 4 Q4 GGUF | Yerel Çıkarım Motoru | Çevrimdışı mod / tüm bulut katmanları başarısız |
+| Katman | Model                               | Sağlayıcı            | Tetikleyici                                     |
+| ------ | ----------------------------------- | -------------------- | ----------------------------------------------- |
+| 0      | Kültürel Harita (130 girdi × 7 dil) | Yerel                | Kaynak dilde deyim tespit edildiğinde           |
+| 1      | Gemma 4 26B (`gemma-4-26b-a4b-it`)  | Gemini API           | Varsayılan çevrimiçi yol                        |
+| 2      | Gemini 2.5 Flash                    | Gemini API           | Katman 1 zaman aşımı / hatası                   |
+| 3      | Gemma 4 Q4 GGUF                     | Yerel Çıkarım Motoru | Çevrimdışı mod / tüm bulut katmanları başarısız |
 
 Kademe **kendi kendini onarır**: herhangi bir katman sessizce başarısız olabilir. Bir sonraki katman milisaniyeler içinde otomatik devreye girer. Pratikte sistem neredeyse her zaman Katman 1 veya 2'de sonuçlanır; Katman 3, sistemin **hiç internet olmasa bile** asla çökmemesi için vardır.
 
@@ -108,6 +109,7 @@ Bu, **kalite açısından simetrik, tamamen Gemma-yerli** bir kademe yaratır: s
 Tüketici GPU'ları (8–12 GB VRAM) tüm modelleri aynı anda tutamaz. Gemma Echo bunu mümkün kılmak için üç strateji kullanır:
 
 ### 🐢 1. Tembel Yükleme (Lazy Loading)
+
 Modeller başlangıçta yüklenmez. Yerel Gemma 4 Q4 yalnızca ilk ihtiyaç duyulduğunda (çevrimdışı mod veya video dublaj) yüklenir. XTTS-v2 yalnızca TTS modu çevrimdışı/GPU'ya alındığında yüklenir.
 
 ```python
@@ -119,6 +121,7 @@ self.local_llm = Llama(model_path="./models/gemma-4-q4.gguf", n_gpu_layers=-1)
 ```
 
 ### 🥷 2. Arka Plan Ön Yükleme (Ambush Mode)
+
 Kullanıcı çevrimiçi moddayken XTTS-v2, sessizce bir daemon thread üzerinde sistem RAM'ine ön yüklenir. Kullanıcı çevrimdışı moda geçtiğinde model zaten sıcaktır — algılanan gecikme sıfırdır.
 
 ```python
@@ -127,6 +130,7 @@ synthesizer.preload_xtts_background(use_gpu=False)
 ```
 
 ### 🔄 3. Önbellek Tahliyeli Sıcak Değişim (Hot-Swap)
+
 GPU ve CPU modları arasında geçiş, yeni konfigürasyonu yüklemeden önce kontrollü bir VRAM tahliyesi tetikler ve CUDA OOM hatalarını önler.
 
 ```python
@@ -144,15 +148,15 @@ torch.cuda.empty_cache()   # bir sonraki yüklemeden önce VRAM tamamen serbest
 
 Ayarlar sayfası STT × LLM × TTS matrisini sergiler. Her eksen bağımsız seçilebilir ve 36+ geçerli kombinasyon üretir. Aşağıdaki ön ayarlar en yaygın olanlardır; **`Özel (Custom)`** her STT motorunu, her çeviri arka ucunu ve her TTS çıkışını karıştırmanıza izin verir.
 
-| Ön Ayar | STT | Çeviri | TTS | İnternet |
-|---------|-----|--------|-----|----------|
-| 🟢 **Çevrimiçi (varsayılan)** | faster-whisper yerel-GPU | Gemma 4 26B → Gemini 2.5 Flash | ElevenLabs Turbo | Gerekli |
-| ☁️ **Bulut STT hızlandırıcı** | Groq Whisper-large-v3 *veya* Deepgram Nova | Gemma 4 26B → Gemini 2.5 Flash | ElevenLabs Turbo | Gerekli |
-| 🛡️ **Çevrimdışı (CPU)** | faster-whisper CPU | Gemma 4 Q4 GGUF (CPU) | XTTS-v2 CPU | Gerekmez |
-| 🚀 **Çevrimdışı (GPU)** | faster-whisper yerel-GPU | Gemma 4 Q4 GGUF (GPU) | XTTS-v2 GPU | Gerekmez |
-| ⚖️ **Hibrit (önerilen)** | faster-whisper yerel-GPU | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 (otomatik yedek) | XTTS-v2 GPU | İsteğe bağlı |
-| 🎥 **Video Dublaj** | faster-whisper medium (zaman damgalı) + Demucs vokal ayrımı | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 | XTTS-v2 (ses klonu) | İsteğe bağlı |
-| 🧩 **Özel (Custom)** | yukarıdakilerin herhangi biri | yukarıdakilerin herhangi biri | yukarıdakilerin herhangi biri | duruma bağlı |
+| Ön Ayar                       | STT                                                         | Çeviri                                                       | TTS                           | İnternet     |
+| ----------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------- | ------------ |
+| 🟢 **Çevrimiçi (varsayılan)** | faster-whisper yerel-GPU                                    | Gemma 4 26B → Gemini 2.5 Flash                               | ElevenLabs Turbo              | Gerekli      |
+| ☁️ **Bulut STT hızlandırıcı** | Groq Whisper-large-v3 _veya_ Deepgram Nova                  | Gemma 4 26B → Gemini 2.5 Flash                               | ElevenLabs Turbo              | Gerekli      |
+| 🛡️ **Çevrimdışı (CPU)**       | faster-whisper CPU                                          | Gemma 4 Q4 GGUF (CPU)                                        | XTTS-v2 CPU                   | Gerekmez     |
+| 🚀 **Çevrimdışı (GPU)**       | faster-whisper yerel-GPU                                    | Gemma 4 Q4 GGUF (GPU)                                        | XTTS-v2 GPU                   | Gerekmez     |
+| ⚖️ **Hibrit (önerilen)**      | faster-whisper yerel-GPU                                    | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 (otomatik yedek) | XTTS-v2 GPU                   | İsteğe bağlı |
+| 🎥 **Video Dublaj**           | faster-whisper medium (zaman damgalı) + Demucs vokal ayrımı | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4                  | XTTS-v2 (ses klonu)           | İsteğe bağlı |
+| 🧩 **Özel (Custom)**          | yukarıdakilerin herhangi biri                               | yukarıdakilerin herhangi biri                                | yukarıdakilerin herhangi biri | duruma bağlı |
 
 ---
 
@@ -308,20 +312,20 @@ python gui/app.py
 
 ## 🛠️ Teknoloji Yığını
 
-| Bileşen | Kitaplık |
-|---------|----------|
-| Arayüz | CustomTkinter |
-| STT (yerel) | faster-whisper (CTranslate2 arka ucu) |
-| STT (bulut hızlandırıcı, isteğe bağlı) | Groq Whisper-large-v3, Deepgram Nova |
-| VAD (ses etkinliği algılama) | webrtcvad |
-| Çeviri (bulut) | Google Gemini API — Gemma 4 26B → Gemini 2.5 Flash |
-| Çeviri (yerel) | `llama-cpp-python` üzerinden Gemma 4 Q4 GGUF |
-| TTS (çevrimiçi) | ElevenLabs |
-| TTS (çevrimdışı / ses klonlama) | Coqui XTTS-v2 † |
-| Vokal/enstrüman ayrımı (dublaj) | Demucs htdemucs (Meta, MIT) |
-| Belge ayrıştırma (kitap çevirisi) | pdfplumber, python-docx |
-| Ses G/Ç | sounddevice, soundfile, soundcard (WASAPI loopback) |
-| Video işleme | ffmpeg (CLI alt süreç) |
+| Bileşen                                | Kitaplık                                            |
+| -------------------------------------- | --------------------------------------------------- |
+| Arayüz                                 | CustomTkinter                                       |
+| STT (yerel)                            | faster-whisper (CTranslate2 arka ucu)               |
+| STT (bulut hızlandırıcı, isteğe bağlı) | Groq Whisper-large-v3, Deepgram Nova                |
+| VAD (ses etkinliği algılama)           | webrtcvad                                           |
+| Çeviri (bulut)                         | Google Gemini API — Gemma 4 26B → Gemini 2.5 Flash  |
+| Çeviri (yerel)                         | `llama-cpp-python` üzerinden Gemma 4 Q4 GGUF        |
+| TTS (çevrimiçi)                        | ElevenLabs                                          |
+| TTS (çevrimdışı / ses klonlama)        | Coqui XTTS-v2 †                                     |
+| Vokal/enstrüman ayrımı (dublaj)        | Demucs htdemucs (Meta, MIT)                         |
+| Belge ayrıştırma (kitap çevirisi)      | pdfplumber, python-docx                             |
+| Ses G/Ç                                | sounddevice, soundfile, soundcard (WASAPI loopback) |
+| Video işleme                           | ffmpeg (CLI alt süreç)                              |
 
 > **† TTS Motoru Lisans Uyarısı.** Gemma Echo'nun çekirdek orkestrasyon çerçevesi Apache 2.0 altında lisanslanmıştır. Ancak **varsayılan** çevrimdışı TTS motoru (Coqui XTTS-v2) **Coqui Public Model License (Ticari Olmayan)** altında lisanslanan model ağırlıklarını kullanır. Gemma Echo, herhangi bir TTS motorunu entegre edebilecek mimariyi sağlar. Ticari dağıtım için kullanıcılar XTTS-v2 ağırlıklarını ticari olarak izin verilebilir bir alternatifle (örn. VITS, Piper) değiştirmeli ya da Coqui GmbH'den ticari lisans almalıdır. Gemma Echo'nun kendi Apache 2.0 lisansı bundan etkilenmez.
 

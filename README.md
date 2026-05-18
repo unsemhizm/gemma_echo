@@ -12,7 +12,7 @@ Gemma Echo is a desktop AI assistant that transcribes spoken Turkish, translates
 
 ▶️ **[Watch on YouTube](https://www.youtube.com/watch?v=1FU11A3G6ig)**
 
-> 🧠 **A note to the judges:** the demo video was shot in Turkish. **The English voice dubbing and the cinematic subtitles you see in the video were generated entirely by Gemma Echo itself**, running locally on consumer hardware. The project literally presents itself.
+> 🧠 ** note :** the demo video was shot in Turkish. **The English voice dubbing and the cinematic subtitles you see in the video were generated entirely by Gemma Echo itself**, running locally on consumer hardware. The project literally presents itself.
 
 ---
 
@@ -23,6 +23,7 @@ Gemma Echo is a desktop AI assistant that transcribes spoken Turkish, translates
 > This is the **only officially supported configuration** at this time. The project has been developed and verified end-to-end on this stack only.
 >
 > Linux and macOS are **not currently tested** and may require manual adaptation:
+>
 > - **Linux + NVIDIA:** likely works after installing `libportaudio2` / `libasound2-dev` and selecting the matching `torch` CUDA wheel; the WASAPI loopback recorder (system-audio capture) is Windows-only.
 > - **macOS (Apple Silicon):** requires switching the inference device from `cuda` to `mps`, building `llama-cpp-python` with `CMAKE_ARGS="-DLLAMA_METAL=on"`, and installing Tcl/Tk (`brew install python-tk`); not tested by the author.
 > - **macOS (Intel) / Linux without NVIDIA:** CPU-only mode is achievable but slow; `torch==2.11.0+cu130` in `requirements.txt` must be replaced with the appropriate non-CUDA wheel.
@@ -35,13 +36,13 @@ Gemma Echo is a desktop AI assistant that transcribes spoken Turkish, translates
 
 Gemma Echo is a multi-modal translation suite. The cascade described below powers **five** distinct workflows, each accessible from the main GUI:
 
-| Mode | Input | Output | Use Case |
-|------|-------|--------|----------|
-| 🎙️ **Live** | Microphone (push-to-talk or VAD) or system loopback (WASAPI) | Streaming text + cloned-voice audio | Real-time conversation, meetings, live calls |
-| 🎬 **Media — Dubbing** | Video file (MP4, MKV, MOV, AVI, WebM) | Dubbed video with cloned speaker voice | Re-voicing Turkish videos in English |
-| 📝 **Media — Subtitling** | Video file | Soft `.srt` track or hard-burned cinematic subtitles | YouTube uploads, accessibility, deliverables |
-| 📄 **Book / Document** | PDF, DOCX, TXT | Translated `.txt` (with optional layout-preserving `.docx`) | Academic papers, books, long-form documents |
-| 📁 **File / Text** | Audio/video file or pasted text | Translated transcript | Bulk transcription, ad-hoc text translation |
+| Mode                      | Input                                                        | Output                                                      | Use Case                                     |
+| ------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- | -------------------------------------------- |
+| 🎙️ **Live**               | Microphone (push-to-talk or VAD) or system loopback (WASAPI) | Streaming text + cloned-voice audio                         | Real-time conversation, meetings, live calls |
+| 🎬 **Media — Dubbing**    | Video file (MP4, MKV, MOV, AVI, WebM)                        | Dubbed video with cloned speaker voice                      | Re-voicing Turkish videos in English         |
+| 📝 **Media — Subtitling** | Video file                                                   | Soft `.srt` track or hard-burned cinematic subtitles        | YouTube uploads, accessibility, deliverables |
+| 📄 **Book / Document**    | PDF, DOCX, TXT                                               | Translated `.txt` (with optional layout-preserving `.docx`) | Academic papers, books, long-form documents  |
+| 📁 **File / Text**        | Audio/video file or pasted text                              | Translated transcript                                       | Bulk transcription, ad-hoc text translation  |
 
 All five modes share the same self-healing translation cascade (Cultural Map → Gemma 4 Cloud → Gemini 2.5 Flash → Gemma 4 Q4 local) and switch between cloud and offline operation transparently.
 
@@ -81,12 +82,12 @@ Audio Output / Dubbed Video
 
 ## 🧠 Self-Healing Model Cascade
 
-| Layer | Model | Provider | Trigger |
-|-------|-------|----------|---------|
-| 0 | Cultural Map (130 entries × 7 languages) | Local | Idiom detected in source language |
-| 1 | Gemma 4 26B (`gemma-4-26b-a4b-it`) | Gemini API | Default online path |
-| 2 | Gemini 2.5 Flash | Gemini API | Layer 1 timeout / error |
-| 3 | Gemma 4 Q4 GGUF | Local Inference Engine | Offline mode / all cloud layers failed |
+| Layer | Model                                    | Provider               | Trigger                                |
+| ----- | ---------------------------------------- | ---------------------- | -------------------------------------- |
+| 0     | Cultural Map (130 entries × 7 languages) | Local                  | Idiom detected in source language      |
+| 1     | Gemma 4 26B (`gemma-4-26b-a4b-it`)       | Gemini API             | Default online path                    |
+| 2     | Gemini 2.5 Flash                         | Gemini API             | Layer 1 timeout / error                |
+| 3     | Gemma 4 Q4 GGUF                          | Local Inference Engine | Offline mode / all cloud layers failed |
 
 The cascade is **self-healing**: any layer can fail silently. The next layer activates automatically within milliseconds. In practice, the system almost always resolves at Layer 1 or 2; Layer 3 exists so the system never goes down — even with no internet at all.
 
@@ -106,6 +107,7 @@ This creates a **quality-symmetric, fully Gemma-native** cascade: every translat
 Consumer GPUs (8–12 GB VRAM) cannot hold all models simultaneously. Gemma Echo uses three strategies to make this work:
 
 ### 🐢 1. Lazy Loading
+
 Models are not loaded at startup. The local Gemma 4 Q4 is loaded only when first needed (offline mode or video dubbing). XTTS-v2 loads only when TTS mode is switched to offline/GPU.
 
 ```python
@@ -116,6 +118,7 @@ self.local_llm = Llama(model_path="./models/gemma-4-q4.gguf", n_gpu_layers=-1)
 ```
 
 ### 🥷 2. Background Preloading (Ambush Mode)
+
 When the user is in online mode, XTTS-v2 silently preloads into system RAM on a daemon thread. If the user switches to offline mode, the model is already warm — no perceived latency.
 
 ```python
@@ -124,6 +127,7 @@ synthesizer.preload_xtts_background(use_gpu=False)
 ```
 
 ### 🔄 3. Hot-Swap with Cache Eviction
+
 Switching between GPU and CPU modes triggers controlled VRAM eviction before loading the new configuration, preventing CUDA OOM errors.
 
 ```python
@@ -141,15 +145,15 @@ All three strategies compose: the system can run on a single RTX 3060 Ti (8 GB V
 
 The Settings page exposes an STT × LLM × TTS matrix. Each axis can be picked independently, producing 36+ valid combinations. The presets below are the most common; **`Custom`** lets you mix any STT engine with any translation backend and any TTS sink.
 
-| Preset | STT | Translation | TTS | Internet |
-|--------|-----|-------------|-----|----------|
-| 🟢 **Online (default)** | faster-whisper local-GPU | Gemma 4 26B → Gemini 2.5 Flash | ElevenLabs Turbo | Required |
-| ☁️ **Cloud STT accelerator** | Groq Whisper-large-v3 *or* Deepgram Nova | Gemma 4 26B → Gemini 2.5 Flash | ElevenLabs Turbo | Required |
-| 🛡️ **Offline (CPU)** | faster-whisper CPU | Gemma 4 Q4 GGUF (CPU) | XTTS-v2 CPU | Not needed |
-| 🚀 **Offline (GPU)** | faster-whisper local-GPU | Gemma 4 Q4 GGUF (GPU) | XTTS-v2 GPU | Not needed |
-| ⚖️ **Hybrid (recommended)** | faster-whisper local-GPU | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 (auto-fallback) | XTTS-v2 GPU | Optional |
-| 🎥 **Video Dubbing** | faster-whisper medium (timestamped) + Demucs vocal split | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 | XTTS-v2 (voice clone) | Optional |
-| 🧩 **Custom** | any of the above | any of the above | any of the above | depends |
+| Preset                       | STT                                                      | Translation                                                 | TTS                   | Internet   |
+| ---------------------------- | -------------------------------------------------------- | ----------------------------------------------------------- | --------------------- | ---------- |
+| 🟢 **Online (default)**      | faster-whisper local-GPU                                 | Gemma 4 26B → Gemini 2.5 Flash                              | ElevenLabs Turbo      | Required   |
+| ☁️ **Cloud STT accelerator** | Groq Whisper-large-v3 _or_ Deepgram Nova                 | Gemma 4 26B → Gemini 2.5 Flash                              | ElevenLabs Turbo      | Required   |
+| 🛡️ **Offline (CPU)**         | faster-whisper CPU                                       | Gemma 4 Q4 GGUF (CPU)                                       | XTTS-v2 CPU           | Not needed |
+| 🚀 **Offline (GPU)**         | faster-whisper local-GPU                                 | Gemma 4 Q4 GGUF (GPU)                                       | XTTS-v2 GPU           | Not needed |
+| ⚖️ **Hybrid (recommended)**  | faster-whisper local-GPU                                 | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4 (auto-fallback) | XTTS-v2 GPU           | Optional   |
+| 🎥 **Video Dubbing**         | faster-whisper medium (timestamped) + Demucs vocal split | Gemma 4 26B → Gemini 2.5 Flash → Gemma 4 Q4                 | XTTS-v2 (voice clone) | Optional   |
+| 🧩 **Custom**                | any of the above                                         | any of the above                                            | any of the above      | depends    |
 
 ---
 
@@ -305,20 +309,20 @@ python gui/app.py
 
 ## 🛠️ Technology Stack
 
-| Component | Library |
-|-----------|---------|
-| GUI | CustomTkinter |
-| STT (local) | faster-whisper (CTranslate2 backend) |
-| STT (cloud accelerator, optional) | Groq Whisper-large-v3, Deepgram Nova |
-| VAD (voice activity detection) | webrtcvad |
-| Translation (cloud) | Google Gemini API — Gemma 4 26B → Gemini 2.5 Flash |
-| Translation (local) | Gemma 4 Q4 GGUF via `llama-cpp-python` |
-| TTS (online) | ElevenLabs |
-| TTS (offline / voice cloning) | Coqui XTTS-v2 † |
-| Vocal/instrumental separation (dubbing) | Demucs htdemucs (Meta, MIT) |
-| Document parsing (book translation) | pdfplumber, python-docx |
-| Audio I/O | sounddevice, soundfile, soundcard (WASAPI loopback) |
-| Video processing | ffmpeg (CLI subprocess) |
+| Component                               | Library                                             |
+| --------------------------------------- | --------------------------------------------------- |
+| GUI                                     | CustomTkinter                                       |
+| STT (local)                             | faster-whisper (CTranslate2 backend)                |
+| STT (cloud accelerator, optional)       | Groq Whisper-large-v3, Deepgram Nova                |
+| VAD (voice activity detection)          | webrtcvad                                           |
+| Translation (cloud)                     | Google Gemini API — Gemma 4 26B → Gemini 2.5 Flash  |
+| Translation (local)                     | Gemma 4 Q4 GGUF via `llama-cpp-python`              |
+| TTS (online)                            | ElevenLabs                                          |
+| TTS (offline / voice cloning)           | Coqui XTTS-v2 †                                     |
+| Vocal/instrumental separation (dubbing) | Demucs htdemucs (Meta, MIT)                         |
+| Document parsing (book translation)     | pdfplumber, python-docx                             |
+| Audio I/O                               | sounddevice, soundfile, soundcard (WASAPI loopback) |
+| Video processing                        | ffmpeg (CLI subprocess)                             |
 
 > **† TTS Engine Licensing Disclaimer.** The core orchestration framework of Gemma Echo is licensed under Apache 2.0. However, the **default** offline TTS engine (Coqui XTTS-v2) uses model weights licensed under the **Coqui Public Model License (Non-Commercial)**. Gemma Echo provides the architecture to integrate any TTS engine. For commercial deployment, users must replace the XTTS-v2 model weights with a commercially permissive alternative (e.g., VITS, Piper) or obtain a commercial license from Coqui GmbH. The Apache 2.0 license of Gemma Echo itself is unaffected.
 
