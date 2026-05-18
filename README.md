@@ -6,6 +6,16 @@ Gemma Echo is a desktop AI assistant that transcribes spoken Turkish, translates
 
 ---
 
+## 🎬 Watch the Demo
+
+[![Gemma Echo Demo](https://img.youtube.com/vi/1FU11A3G6ig/maxresdefault.jpg)](https://www.youtube.com/watch?v=1FU11A3G6ig)
+
+▶️ **[Watch on YouTube](https://www.youtube.com/watch?v=1FU11A3G6ig)**
+
+> 🧠 **A note to the judges:** the demo video was shot in Turkish. **The English voice dubbing and the cinematic subtitles you see in the video were generated entirely by Gemma Echo itself**, running locally on consumer hardware. The project literally presents itself.
+
+---
+
 ## 💻 Platform Support
 
 > ⚠️ **Tested platform: Windows 11 + NVIDIA GPU (CUDA 13).**
