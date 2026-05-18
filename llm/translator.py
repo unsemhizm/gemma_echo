@@ -126,6 +126,7 @@ class Translator:
         # Critical for document translation where wasting 30s per chunk is
         # unacceptable — we drop straight to the local engine instead.
         self._online_cooldown_until = 0.0   # Epoch seconds; online is skipped while time.time() < this.
+        self._gemma4_cooldown_until = 0.0   # Epoch seconds; Tier 1 (Gemma 4) is skipped while time.time() < this.
         self._consecutive_quota_errors = 0  # Used to back off the cooldown duration exponentially.
 
 
@@ -646,7 +647,7 @@ class Translator:
                 f"bypassing cloud tiers, dropping to offline directly."
             )
             try:
-                return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+                return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary, allow_fallback=False)
             except Exception:
                 log.critical("Offline path also failed (during cooldown).", exc_info=True)
                 return {"translation": "[TRANSLATION ERROR]", "latency_ms": 0, "engine": "Failed"}
@@ -681,26 +682,32 @@ class Translator:
         flash_failed_reason = None
 
         # --- TIER 1: GEMINI API (GEMMA 4) ---
-        gemini_gemma_start = time.time()
-        try:
-            translation = self._gemini_call(self.gemma4_api_model, user_message, timeout=gemma4_timeout, max_output_tokens=dynamic_max_tokens)
-            self._consecutive_quota_errors = 0
-            latency = int((time.time() - gemini_gemma_start) * 1000)
-            return {
-                "translation": translation.strip(),
-                "latency_ms": latency,
-                "engine": f"Gemini API ({self.gemma4_api_model})"
-            }
-        except TimeoutError:
-            log.warning(f"Gemini API ({self.gemma4_api_model}) timeout ({gemma4_timeout}s) -> cascading to Gemini 2.5 Flash...")
-            gemma4_failed_reason = "timeout"
-        except Exception as e:
-            self._maybe_trigger_quota_cooldown(e, self.gemma4_api_model)
-            log.warning(
-                f"Gemini API ({self.gemma4_api_model}) error -> cascading to Gemini 2.5 Flash.",
-                exc_info=True
-            )
-            gemma4_failed_reason = "error"
+        if time.time() < self._gemma4_cooldown_until:
+            log.info("Gemma 4 is on cooldown, skipping straight to Gemini Flash...")
+            gemma4_failed_reason = "cooldown"
+        else:
+            gemini_gemma_start = time.time()
+            try:
+                translation = self._gemini_call(self.gemma4_api_model, user_message, timeout=gemma4_timeout, max_output_tokens=dynamic_max_tokens)
+                self._consecutive_quota_errors = 0
+                latency = int((time.time() - gemini_gemma_start) * 1000)
+                return {
+                    "translation": translation.strip(),
+                    "latency_ms": latency,
+                    "engine": f"Gemini API ({self.gemma4_api_model})"
+                }
+            except TimeoutError:
+                log.warning(f"Gemini API ({self.gemma4_api_model}) timeout ({gemma4_timeout}s) -> cascading to Gemini 2.5 Flash...")
+                gemma4_failed_reason = "timeout"
+                self._gemma4_cooldown_until = time.time() + 180  # 3 min cooldown
+            except Exception as e:
+                self._maybe_trigger_quota_cooldown(e, self.gemma4_api_model)
+                log.warning(
+                    f"Gemini API ({self.gemma4_api_model}) error -> cascading to Gemini 2.5 Flash.",
+                    exc_info=True
+                )
+                gemma4_failed_reason = "error"
+                self._gemma4_cooldown_until = time.time() + 180  # 3 min cooldown
 
         # --- TIER 2: GEMINI 2.5 FLASH ---
         gemini_flash_start = time.time()
@@ -721,12 +728,8 @@ class Translator:
             log.warning("Gemini 2.5 Flash error. Dropping to local model.", exc_info=True)
             flash_failed_reason = "error"
 
-        # BOTH TIERS FAILED — trigger cooldown (timeout or error, indifferently).
-        # _maybe_trigger_quota_cooldown only increments the counter on 429;
-        # on timeouts we still need to start an aggressive cooldown here to
-        # avoid wasting another 240s on the next chunk.
+        # BOTH TIERS FAILED — trigger cooldown for the entire cloud path.
         if gemma4_failed_reason and flash_failed_reason:
-            # Avoid double-counting when a quota cooldown is already armed.
             if self._consecutive_quota_errors == 0 or (time.time() >= self._online_cooldown_until):
                 self._trigger_online_failure_cooldown(
                     "both_layers",
@@ -736,7 +739,7 @@ class Translator:
         # --- TIER 3: LOCAL OFFLINE MODEL FALLBACK (uninterrupted service) ---
         log.warning("All cloud APIs failed — engaging the local Gemma model (GGUF)...")
         try:
-            return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary)
+            return self.translate_offline(text_tr, context, hint, prev_translation, rolling_summary, allow_fallback=False)
         except Exception:
             log.critical(
                 "Local offline model also failed — every tier of the cascade is down!",
@@ -753,7 +756,8 @@ class Translator:
     # ═══════════════════════════════════════════════════════════
 
     def translate_offline(self, text_tr: str, context: list = [], hint: str = "",
-                          prev_translation: str = "", rolling_summary: str = "") -> dict:
+                          prev_translation: str = "", rolling_summary: str = "",
+                          allow_fallback: bool = True) -> dict:
         """
         Translate via the local GGUF model.
 
@@ -768,10 +772,10 @@ class Translator:
         req_ctx = 8192 if (prev_translation or rolling_summary) else 512
 
         if self.local_llm is None:
-            if self._llm_vram_failed:
-                return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
-            if not self.load_local_model(req_ctx):
-                return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+            if self._llm_vram_failed or not self.load_local_model(req_ctx):
+                if allow_fallback:
+                    return self.translate_online(text_tr, context, hint, prev_translation, rolling_summary)
+                raise RuntimeError("Local model unavailable and fallback is disabled.")
         else:
             # BUG FIX: only ever GROW the context window, never shrink it.
             # Without this guard, the dubber would load 8192, then on the first

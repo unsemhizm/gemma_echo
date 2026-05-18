@@ -40,10 +40,18 @@ Translation / LLM
 
 Speech-to-Text
 --------------
+  OpenAI Whisper (model)      MIT License          Copyright OpenAI
+                              (the Whisper model architecture and the
+                              `large-v3` weights used by faster-whisper /
+                              Groq are released by OpenAI under MIT)
   faster-whisper              MIT License          Copyright Guillaume Klein
+  CTranslate2                 MIT License          Copyright SYSTRAN
+                              (faster-whisper's underlying inference engine)
   groq                        Apache License 2.0   Copyright Groq, Inc.
                               (used only as a cloud accelerator for the
                               OpenAI Whisper-large-v3 model; optional)
+  deepgram-sdk                MIT License          Copyright Deepgram, Inc.
+                              (cloud STT fallback; optional)
 
 Text-to-Speech
 --------------
@@ -72,6 +80,11 @@ Audio / Video Processing
   sounddevice                 MIT License          Copyright Matthias Geier
   webrtcvad-wheels            BSD 3-Clause License Copyright Google / Tom Wilson
   ffmpeg-python               Apache License 2.0   Copyright Karl Kroening
+                              (Python wrapper only; the FFmpeg binary itself
+                              is a system dependency, NOT bundled with this
+                              repository — users must install FFmpeg separately
+                              from https://ffmpeg.org/, where it is distributed
+                              under LGPL 2.1+ or GPL 2+ depending on build)
   soundcard                   BSD 3-Clause License Copyright Bastian Bechtold
 
 Machine Learning Runtime

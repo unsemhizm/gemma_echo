@@ -410,8 +410,13 @@ class DubbingPipeline:
             if not segments:
                 raise RuntimeError(f"No {src_name} speech detected in the video.")
 
+            # Subtitling needs SHORT, snappy segments (~3-5 s, 1-2 lines on
+            # screen). The dubbing path consolidates segments into 6-14 s
+            # blocks for natural XTTS prosody, but applying that here causes
+            # the whole transcript to appear as one giant subtitle covering
+            # the screen. Only rescue critically short fragments (<0.6 s);
+            # keep Whisper's natural sentence-length segmentation otherwise.
             segments = self._merge_short_segments(segments)
-            segments = self._consolidate_segments(segments)
             prog(0.30, f"{len(segments)} segments detected.", "#23d05e")
 
             if transcript_cb:
@@ -523,14 +528,92 @@ class DubbingPipeline:
         s, ms = divmod(ms, 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-    def _write_srt(self, segments: list, srt_path: str):
-        """Write translated segments to an SRT file (UTF-8, BOM-less)."""
+    def _write_srt(self, segments: list, srt_path: str,
+                   max_line_chars: int = 42, max_lines: int = 2):
+        """Write translated segments to an SRT file (UTF-8, BOM-less).
+
+        Each segment is normalised for on-screen readability:
+          1. If the translated text is short enough, it is wrapped to
+             ``max_lines`` lines of at most ``max_line_chars`` characters.
+          2. If the text is longer than the wrap budget allows, it is split
+             at sentence boundaries (``. ``, ``? ``, ``! ``) into multiple
+             SRT entries whose durations are proportional to the character
+             count of each piece. This prevents a single 6-line block from
+             covering half the screen — exactly the bug reported by the
+             user ("alt yazı tüm ekranı kaplıyor").
+        """
+        import textwrap, re
+
+        def _wrap(s: str) -> str:
+            """Soft-wrap a string into at most ``max_lines`` short lines."""
+            s = s.strip().replace("\r\n", "\n")
+            if not s:
+                return ""
+            wrapped = textwrap.wrap(
+                s, width=max_line_chars,
+                break_long_words=False, break_on_hyphens=False
+            )
+            return "\n".join(wrapped[:max_lines]) if wrapped else s
+
+        def _split_pieces(s: str) -> list:
+            """Split text into sentence-sized pieces that fit the wrap budget."""
+            budget = max_line_chars * max_lines
+            if len(s) <= budget:
+                return [s]
+            # Split at sentence terminators while keeping the punctuation.
+            parts = re.split(r"(?<=[.!?])\s+", s.strip())
+            pieces, cur = [], ""
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                candidate = (cur + " " + p).strip() if cur else p
+                if len(candidate) <= budget:
+                    cur = candidate
+                else:
+                    if cur:
+                        pieces.append(cur)
+                    # If a single sentence still exceeds the budget, fall
+                    # back to a hard wrap by words.
+                    if len(p) > budget:
+                        words, buf = p.split(), ""
+                        for w in words:
+                            cand = (buf + " " + w).strip() if buf else w
+                            if len(cand) <= budget:
+                                buf = cand
+                            else:
+                                pieces.append(buf)
+                                buf = w
+                        cur = buf
+                    else:
+                        cur = p
+            if cur:
+                pieces.append(cur)
+            return pieces or [s]
+
+        idx = 1
         with open(srt_path, "w", encoding="utf-8") as f:
-            for i, seg in enumerate(segments, start=1):
-                start = self._format_srt_timestamp(seg["start"])
-                end   = self._format_srt_timestamp(seg["end"])
-                text  = (seg.get("text_en") or "").strip().replace("\r\n", "\n")
-                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+            for seg in segments:
+                text = (seg.get("text_en") or "").strip()
+                if not text:
+                    continue
+                seg_start = float(seg["start"])
+                seg_end   = float(seg["end"])
+                seg_dur   = max(0.4, seg_end - seg_start)
+
+                pieces = _split_pieces(text)
+                total_chars = sum(len(p) for p in pieces) or 1
+                cursor = seg_start
+                for j, piece in enumerate(pieces):
+                    if j == len(pieces) - 1:
+                        piece_end = seg_end
+                    else:
+                        piece_end = cursor + seg_dur * (len(piece) / total_chars)
+                    start_ts = self._format_srt_timestamp(cursor)
+                    end_ts   = self._format_srt_timestamp(max(cursor + 0.3, piece_end))
+                    f.write(f"{idx}\n{start_ts} --> {end_ts}\n{_wrap(piece)}\n\n")
+                    idx += 1
+                    cursor = piece_end
 
     def _mux_soft_subtitles(self, video_path: str, srt_path: str,
                             output_path: str, lang_code: str = "eng"):
@@ -563,13 +646,31 @@ class DubbingPipeline:
             )
 
     def _burn_subtitles(self, video_path: str, srt_path: str, output_path: str):
-        """Hard-burn the subtitles into the video (re-encodes the video stream)."""
+        """Hard-burn the subtitles into the video (re-encodes the video stream).
+
+        Cinematic style (Netflix / theatrical): white sans-serif text with a
+        crisp black outline and a soft drop shadow — NO opaque background
+        box. ``BorderStyle=1`` draws an outline + shadow only; the previous
+        ``BorderStyle=3`` (opaque box) covered too much of the frame and
+        looked like 90s teletext. Colours use the ASS ``&HAABBGGRR`` byte
+        order: ``&H00FFFFFF`` = opaque white text, ``&H00000000`` = opaque
+        black outline/shadow. ``MarginV=40`` keeps the line inside the
+        bottom safe area without hugging the edge.
+        """
         # ffmpeg subtitles filter requires forward slashes and escaping on Windows.
         srt_filter = srt_path.replace("\\", "/").replace(":", "\\:")
+        force_style = (
+            "FontName=Arial,FontSize=16,Bold=1,"
+            "PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,"
+            "BackColour=&H00000000,"
+            "BorderStyle=1,Outline=1.5,Shadow=0.5,"
+            "Alignment=2,MarginV=12"
+        )
         cmd = [
             "ffmpeg", "-y",
             "-i", video_path,
-            "-vf", f"subtitles='{srt_filter}'",
+            "-vf", f"subtitles='{srt_filter}':force_style='{force_style}'",
             "-c:a", "copy",
             output_path,
         ]

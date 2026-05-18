@@ -86,6 +86,18 @@ class MediaView(ctk.CTkFrame):
         )
         self._btn_subtitle.pack(side="left", padx=(0, 6))
 
+        # Toggle: when ON, hard-burn the subtitles onto the video frames
+        # (white text, black opaque box). When OFF, embed as a soft track.
+        self._burn_switch = ctk.CTkSwitch(
+            bar_in, text=t("burn_subtitles"),
+            font=ctk.CTkFont(size=11),
+            text_color=_C["muted"],
+            progress_color=_C["blue"],
+            button_color="#7dd3fc",
+            button_hover_color="#5b9ef9",
+        )
+        self._burn_switch.pack(side="left", padx=(0, 6))
+
         self._btn_dub = ctk.CTkButton(
             bar_in, text=f"\U0001f3ac  {t('dubbing')}", width=90, height=36,
             fg_color="#2a1a4a", hover_color="#4a2a7a",
@@ -298,7 +310,10 @@ class MediaView(ctk.CTkFrame):
             return
 
         base, _ = os.path.splitext(path)
-        output_path = base + "_subtitled.mp4"
+        burn_in = bool(self._burn_switch.get())
+        # Suffix differentiates the two outputs so users can produce both.
+        suffix = "_burned" if burn_in else "_subtitled"
+        output_path = base + suffix + ".mp4"
 
         self._subtitling = True
         self._btn_subtitle.configure(state="disabled", fg_color=_C["dim"])
@@ -306,10 +321,12 @@ class MediaView(ctk.CTkFrame):
         self._btn_process.configure(state="disabled")
         self._clear()
         threading.Thread(
-            target=self._subtitling_pipeline, args=(path, output_path), daemon=True
+            target=self._subtitling_pipeline,
+            args=(path, output_path, burn_in),
+            daemon=True,
         ).start()
 
-    def _subtitling_pipeline(self, src: str, output_path: str):
+    def _subtitling_pipeline(self, src: str, output_path: str, burn_in: bool = False):
         from pipeline.dubber import DubbingPipeline
 
         orch = self.app._orchestrator
@@ -336,7 +353,7 @@ class MediaView(ctk.CTkFrame):
                 progress_cb=on_progress,
                 transcript_cb=self._show_dub_transcript,
                 translation_cb=self._on_dub_translation,
-                burn_in=False,
+                burn_in=burn_in,
             )
             self._last_output_path = output_path
             self.after(0, self._on_dubbing_complete)

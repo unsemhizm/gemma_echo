@@ -17,7 +17,7 @@ llama_cpp_python==0.3.21
 
 # ── TTS ──────────────────────────────────────────────────────
 elevenlabs==2.44.0         # ElevenLabs (online TTS)
-# TTS-v2 (offline/gpu): torchaudio + bağımlılıkları ile gelir
+TTS==0.22.0                # Coqui XTTS-v2 (offline / voice-cloning) — separate package, NOT bundled with torchaudio
 
 # ── Audio / VAD ──────────────────────────────────────────────
 sounddevice==0.5.5
@@ -29,6 +29,9 @@ demucs==4.0.1
 # ── ML / CUDA ────────────────────────────────────────────────
 torch==2.11.0+cu130
 torchaudio==2.11.0+cu130
+# numpy <2 is REQUIRED by Coqui TTS (XTTS-v2). Without this pin, pip will
+# pull numpy 2.x as a transitive dependency and break XTTS at import time.
+numpy==1.26.4
 
 # ── GUI ──────────────────────────────────────────────────────
 customtkinter==5.2.2       # Modern Tkinter arayüzü
@@ -47,3 +50,4 @@ soundcard==0.4.6           # WASAPI loopback inbound (stt/recorder.py — yoksa 
 # ── Yardımcı ─────────────────────────────────────────────────
 python-dotenv==1.2.2
 requests==2.33.1           # ElevenLabs ve Deepgram STT için
+deepgram-sdk==7.0.0        # Cloud STT fallback (DEEPGRAM_API_KEY varsa kullanilir; opsiyonel)
